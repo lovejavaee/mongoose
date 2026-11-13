@@ -1,0 +1,116 @@
+'use strict';
+
+const mongoose = require('../');
+const { MongoClient } = require('mongodb');
+
+run().catch(err => {
+  console.error(err);
+  process.exit(-1);
+});
+
+async function run() {
+  const uri = 'mongodb://127.0.0.1:27017/mongoose_benchmark';
+
+  await mongoose.connect(uri);
+  const FooSchema = new mongoose.Schema({
+    prop1: String,
+    prop2: String,
+    prop3: String,
+    prop4: String,
+    prop5: String,
+    prop6: String,
+    prop7: String,
+    prop8: String,
+    prop9: String,
+    prop10: String
+  });
+  const FooModel = mongoose.model('Foo', FooSchema, 'foos');
+
+  const client = new MongoClient(uri);
+  await client.connect();
+  const db = client.db();
+  const fooCollection = db.collection('foos');
+
+  if (!process.env.MONGOOSE_BENCHMARK_SKIP_SETUP) {
+    await FooModel.deleteMany({});
+    await fooCollection.deleteMany({});
+  }
+
+  const numIterations = 500;
+  const c = FooModel.collection;
+  let totalDriverInsertTime = 0;
+  let totalMongooseSaveTime = 0;
+  for (let i = 0; i < 15000; ++i) {
+    // Warm up
+    await c.insertOne({
+      _id: new mongoose.Types.ObjectId(),
+      prop1: `test ${i}`,
+      prop2: `test ${i}`,
+      prop3: `test ${i}`,
+      prop4: `test ${i}`,
+      prop5: `test ${i}`,
+      prop6: `test ${i}`,
+      prop7: `test ${i}`,
+      prop8: `test ${i}`,
+      prop9: `test ${i}`,
+      prop10: `test ${i}`
+    });
+  }
+
+  for (let i = 0; i < 3; ++i) {
+    const driverInsertStart = Date.now();
+    for (let i = 0; i < numIterations; ++i) {
+      for (let j = 0; j < 10; ++j) {
+        await fooCollection.insertOne({
+          _id: new mongoose.Types.ObjectId(),
+          prop1: `test ${i}`,
+          prop2: `test ${i}`,
+          prop3: `test ${i}`,
+          prop4: `test ${i}`,
+          prop5: `test ${i}`,
+          prop6: `test ${i}`,
+          prop7: `test ${i}`,
+          prop8: `test ${i}`,
+          prop9: `test ${i}`,
+          prop10: `test ${i}`
+        });
+      }
+    }
+    const driverInsertEnd = Date.now();
+
+    const mongooseSaveStart = Date.now();
+    for (let i = 0; i < numIterations; ++i) {
+      for (let j = 0; j < 10; ++j) {
+        const doc = new FooModel({
+          prop1: `test ${i}`,
+          prop2: `test ${i}`,
+          prop3: `test ${i}`,
+          prop4: `test ${i}`,
+          prop5: `test ${i}`,
+          prop6: `test ${i}`,
+          prop7: `test ${i}`,
+          prop8: `test ${i}`,
+          prop9: `test ${i}`,
+          prop10: `test ${i}`
+        });
+        await doc.save();
+      }
+    }
+    const mongooseSaveEnd = Date.now();
+
+    totalDriverInsertTime += driverInsertEnd - driverInsertStart;
+    totalMongooseSaveTime += mongooseSaveEnd - mongooseSaveStart;
+  }
+
+  const results = {
+    'Average mongoose save time ms': +(totalMongooseSaveTime / (3 * numIterations)).toFixed(2),
+    'Average driver insertOne time ms': +(totalDriverInsertTime / (3 * numIterations)).toFixed(2)
+  };
+
+  console.log(JSON.stringify(results, null, '  '));
+
+
+  await client.close();
+
+  process.exit(0);
+}

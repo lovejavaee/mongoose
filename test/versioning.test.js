@@ -512,6 +512,23 @@ describe('versioning', function() {
     assert.equal(err.name, 'VersionError');
   });
 
+  it('should support optimisticConcurrency being an array of strings', async function() {
+    const thingSchema = new Schema({ price: Number, name: String }, { optimisticConcurrency: ['price', 'name'] });
+    const Thing = db.model('Thing', thingSchema);
+
+    const thing = await Thing.create({ price: 1, name: 'Test' });
+    await thing.save();
+    assert.equal(thing.__v, 0);
+    const thing_1 = await Thing.findById(thing.id);
+    const thing_2 = await Thing.findById(thing.id);
+    thing_1.set({ price: 2, name: 'Testerson' });
+    await thing_1.save();
+    assert.equal(thing_1.__v, 1);
+    thing_2.set({ price: 1, name: 'Test' });
+    const err = await thing_2.save().then(() => null, err => err);
+    assert.ok(!err);
+  });
+
   it('gh-1898', async function() {
     const schema = new Schema({ tags: [String], name: String });
 
@@ -642,5 +659,323 @@ describe('versioning', function() {
     assert.strictEqual(doc.meta.versionKey, 0);
     const fromDb = await Model.findById(doc);
     assert.strictEqual(fromDb.meta.versionKey, 0);
+  });
+
+  describe('version mode accumulation (gh-15888)', function() {
+    const VERSION_ALL = mongoose.Document.VERSION_ALL;
+
+    it('combines VERSION_INC and VERSION_WHERE when pull and index set happen together', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+
+      // Act
+      user.items.pull(user.items[0]._id); // VERSION_INC ($pull is an array atomic op)
+      user.tags[0] = 'modified'; // VERSION_WHERE (modifying array element by index)
+      user.$__delta();
+      const versionMode = user.$__.version;
+      await user.save();
+
+      // Assert
+      const afterSave = await User.findById(user._id);
+      assert.strictEqual(versionMode, VERSION_ALL, 'version mode should be VERSION_ALL (3)');
+      assert.strictEqual(user.__v, 1, '__v should be incremented in memory after pull');
+      assert.strictEqual(afterSave.__v, 1, '__v should be incremented in db after pull');
+    });
+
+    it('rejects stale update after pull when another client modifies by index', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+      const clientA = await User.findById(user._id);
+      const clientB = await User.findById(user._id);
+
+      // Act - Client A: pull + set index
+      clientA.items.pull(clientA.items[0]._id); // VERSION_INC
+      clientA.tags[0] = 'modified'; // VERSION_WHERE
+      await clientA.save();
+
+      // Client B: stale view, updates by index
+      clientB.items[1].name = 'updated'; // VERSION_WHERE
+      const err = await clientB.save().then(() => null, err => err);
+
+      // Assert
+      assert.ok(err, 'save should throw VersionError due to stale __v');
+      assert.strictEqual(err.name, 'VersionError');
+    });
+
+    it('combines VERSION_WHERE and VERSION_INC regardless of operation order', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+
+      // Act - set index first (VERSION_WHERE) then push (VERSION_INC)
+      user.tags[0] = 'modified'; // VERSION_WHERE
+      user.items.push({ name: 'item4' }); // VERSION_INC
+      user.$__delta();
+      const versionMode = user.$__.version;
+      await user.save();
+
+      // Assert
+      const afterSave = await User.findById(user._id);
+      assert.strictEqual(versionMode, VERSION_ALL, 'version mode should be VERSION_ALL (3)');
+      assert.strictEqual(afterSave.__v, 1, '__v should be incremented after push');
+    });
+
+    async function createTestContext() {
+      const schema = new Schema({
+        items: [{ name: String }],
+        tags: [String]
+      });
+      const User = db.model('Test', schema);
+      const user = await User.create({
+        items: [{ name: 'item1' }, { name: 'item2' }, { name: 'item3' }],
+        tags: ['tag1', 'tag2']
+      });
+      return { User, user };
+    }
+  });
+
+  describe('optimisticConcurrency (gh-15912) (gh-15915)', function() {
+    const VERSION_ALL = mongoose.Document.VERSION_ALL;
+
+    describe('optimisticConcurrency: true', function() {
+      it('sets VERSION_ALL when modifying any field', async function() {
+        // Arrange
+        const { user } = await createTestContext({ optimisticConcurrency: true });
+
+        // Act
+        user.balance = 200;
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, VERSION_ALL);
+      });
+
+      it('sets VERSION_ALL when modifying array field', async function() {
+        // Arrange
+        const { user } = await createTestContext({ optimisticConcurrency: true });
+
+        // Act
+        user.friends.push('c');
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, VERSION_ALL);
+      });
+    });
+
+    describe('optimisticConcurrency: string[]', function() {
+      it('sets VERSION_ALL when modifying specified field', async function() {
+        // Arrange
+        const { user } = await createTestContext({ optimisticConcurrency: ['balance'] });
+
+        // Act
+        user.balance = 200;
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, VERSION_ALL);
+      });
+
+      it('sets VERSION_ALL when modifying specified array field', async function() {
+        // Arrange
+        const { user } = await createTestContext({ optimisticConcurrency: ['friends'] });
+
+        // Act
+        user.friends.push('c');
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, VERSION_ALL);
+      });
+
+      it('does not set version when modifying non-specified field', async function() {
+        // Arrange
+        const { user } = await createTestContext({ optimisticConcurrency: ['balance'] });
+
+        // Act
+        user.name = 'changed';
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, undefined);
+      });
+
+      it('does not set version when modifying non-specified array field', async function() {
+        // Arrange
+        const { user } = await createTestContext({ optimisticConcurrency: ['balance'] });
+
+        // Act
+        user.friends.push('new-friend');
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, undefined);
+      });
+
+      it('sets VERSION_ALL when modifying a map key matching a wildcard path (gh-16383)', async function() {
+        // Arrange
+        const userSchema = new Schema({
+          settings: { type: Map, of: String },
+          balance: Number
+        }, { optimisticConcurrency: ['settings.$*'] });
+        const User = db.model('Test', userSchema);
+        const user = await User.create({ settings: { theme: 'dark' }, balance: 100 });
+
+        // Act
+        user.settings.set('theme', 'light');
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, VERSION_ALL);
+      });
+
+      it('sets VERSION_ALL when modifying array element path matching a subdocument path (gh-16383)', async function() {
+        // Arrange
+        const postSchema = new Schema({
+          comments: [{ text: String, author: String }],
+          title: String
+        }, { optimisticConcurrency: ['comments.text'] });
+        const Post = db.model('Test', postSchema);
+        const post = await Post.create({ title: 'Hello', comments: [{ text: 'First' }] });
+
+        // Act
+        post.comments[0].text = 'Edited';
+        post.$__delta();
+
+        // Assert
+        assert.strictEqual(post.$__.version, VERSION_ALL);
+      });
+
+      it('does not set version when modifying non-specified subdocument path (gh-16383)', async function() {
+        // Arrange
+        const postSchema = new Schema({
+          comments: [{ text: String, author: String }],
+          title: String
+        }, { optimisticConcurrency: ['comments.text'] });
+        const Post = db.model('Test', postSchema);
+        const post = await Post.create({ title: 'Hello', comments: [{ text: 'First', author: 'A' }] });
+
+        // Act
+        post.comments[0].author = 'B';
+        post.$__delta();
+
+        // Assert
+        assert.strictEqual(post.$__.version, undefined);
+      });
+
+      it('does not set version when modifying non-specified field with wildcard path (gh-16383)', async function() {
+        // Arrange
+        const userSchema = new Schema({
+          settings: { type: Map, of: String },
+          balance: Number
+        }, { optimisticConcurrency: ['settings.$*'] });
+        const User = db.model('Test', userSchema);
+        const user = await User.create({ settings: { theme: 'dark' }, balance: 100 });
+
+        // Act
+        user.balance = 200;
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, undefined);
+      });
+    });
+
+    describe('optimisticConcurrency: { exclude: [] }', function() {
+      it('sets VERSION_ALL when modifying non-excluded field', async function() {
+        // Arrange
+        const { user } = await createTestContext({ optimisticConcurrency: { exclude: ['name'] } });
+
+        // Act
+        user.balance = 200;
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, VERSION_ALL);
+      });
+
+      it('sets VERSION_ALL when modifying non-excluded array field', async function() {
+        // Arrange
+        const { user } = await createTestContext({ optimisticConcurrency: { exclude: ['name'] } });
+
+        // Act
+        user.friends.push('c');
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, VERSION_ALL);
+      });
+
+      it('does not set version when modifying only excluded field', async function() {
+        // Arrange
+        const { user } = await createTestContext({ optimisticConcurrency: { exclude: ['name'] } });
+
+        // Act
+        user.name = 'changed';
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, undefined);
+      });
+
+      it('does not set version when modifying only excluded array field', async function() {
+        // Arrange
+        const { user } = await createTestContext({ optimisticConcurrency: { exclude: ['friends'] } });
+
+        // Act
+        user.friends.push('new-friend');
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, undefined);
+      });
+
+      it('sets VERSION_ALL when modifying both excluded and non-excluded fields', async function() {
+        // Arrange
+        const { user } = await createTestContext({ optimisticConcurrency: { exclude: ['name'] } });
+
+        // Act
+        user.name = 'changed';
+        user.balance = 200;
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, VERSION_ALL);
+      });
+
+      it('does not set version when modifying only a map key excluded by wildcard path (gh-16383)', async function() {
+        // Arrange
+        const userSchema = new Schema({
+          settings: { type: Map, of: String },
+          balance: Number
+        }, { optimisticConcurrency: { exclude: ['settings.$*'] } });
+        const User = db.model('Test', userSchema);
+        const user = await User.create({ settings: { theme: 'dark' }, balance: 100 });
+
+        // Act
+        user.settings.set('theme', 'light');
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, undefined);
+      });
+    });
+
+    async function createTestContext({ optimisticConcurrency }) {
+      const schema = new Schema({
+        name: String,
+        balance: Number,
+        friends: [String]
+      }, { optimisticConcurrency });
+
+      const User = db.model('Test', schema);
+
+      const user = await User.create({
+        name: 'test',
+        balance: 100,
+        friends: ['alice', 'bob']
+      });
+
+      return { user };
+    }
   });
 });

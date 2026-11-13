@@ -10,14 +10,16 @@ const CastError = require('../lib/error/cast');
 const assert = require('assert');
 const mongoose = start.mongoose;
 const random = require('./util').random;
-const Utils = require('../lib/utils');
+const utils = require('../lib/utils');
 const Schema = mongoose.Schema;
 const ObjectId = Schema.Types.ObjectId;
 const DocumentObjectId = mongoose.Types.ObjectId;
 const isEqual = require('lodash.isequal');
+const { isDeepStrictEqual } = require('util');
 const isEqualWith = require('lodash.isequalwith');
 const util = require('./util');
 const uuid = require('uuid');
+const sinon = require('sinon');
 
 describe('model: findOneAndUpdate:', function() {
   let Comments;
@@ -155,6 +157,66 @@ describe('model: findOneAndUpdate:', function() {
     assert.ok(up.comments[1]._id instanceof DocumentObjectId);
   });
 
+  it('preserves own __proto__ keys in update payloads without mutating the caller update (gh-16202)', async function() {
+    const Test = db.model('Test', new Schema({
+      path1: Schema.Types.Mixed
+    }));
+
+    const doc = await Test.create({ path1: {} });
+    const update = { $set: { path1: { ['__proto__']: 'abcd' } } };
+
+    const res = await Test.findOneAndUpdate(
+      { _id: doc._id },
+      update,
+      { returnDocument: 'after', cloneUpdate: false }
+    ).lean();
+
+    assert.equal(Object.prototype.hasOwnProperty.call(update.$set.path1, '__proto__'), true);
+    assert.equal(update.$set.path1.__proto__, 'abcd');
+    assert.equal(Object.prototype.hasOwnProperty.call(res.path1, '__proto__'), true);
+    assert.equal(res.path1.__proto__, 'abcd');
+  });
+
+  it('does not mutate the caller update when chaining set() after findOneAndUpdate()', async function() {
+    const Test = db.model('Test', new Schema({
+      title: String,
+      status: String
+    }));
+
+    const doc = await Test.create({ title: 'before', status: 'before' });
+    const update = { title: 'after' };
+
+    const query = Test.findOneAndUpdate(
+      { _id: doc._id },
+      update,
+      { returnDocument: 'after' }
+    );
+
+    query.set('status', 'changed');
+    const res = await query;
+
+    assert.deepStrictEqual(update, { title: 'after' });
+    assert.equal(res.title, 'after');
+    assert.equal(res.status, 'changed');
+  });
+
+  it('does not mutate the caller update when built-in timestamp middleware runs', async function() {
+    const Test = db.model('Test', new Schema({
+      title: String
+    }, { timestamps: true }));
+
+    const doc = await Test.create({ title: 'before' });
+    const update = { $set: { title: 'after' } };
+
+    await Test.findOneAndUpdate(
+      { _id: doc._id },
+      update,
+      { returnDocument: 'after' }
+    );
+
+    assert.deepStrictEqual(update, { $set: { title: 'after' } });
+  });
+
   describe('will correctly', function() {
     let ItemParentModel, ItemChildModel;
 
@@ -209,7 +271,7 @@ describe('model: findOneAndUpdate:', function() {
       assert.ok(updatedDoc.items);
       assert.ok(updatedDoc.items instanceof Array);
       assert.ok(updatedDoc.items.length, 3);
-      assert.ok(Utils.isObject(updatedDoc.items[0].address));
+      assert.ok(utils.isObject(updatedDoc.items[0].address));
       assert.ok(Object.keys(updatedDoc.items[0].address).length, 0);
     });
   });
@@ -325,11 +387,6 @@ describe('model: findOneAndUpdate:', function() {
     assert.strictEqual(undefined, query.options.new);
     assert.equal(query._update.$set.date.toString(), now.toString());
     assert.strictEqual('aaron', query._conditions.author);
-
-    query = M.findOneAndUpdate({ $set: { date: now } });
-    assert.strictEqual(undefined, query.options.new);
-    assert.equal(query._update.$set.date.toString(), now.toString());
-    assert.strictEqual(undefined, query._conditions.author);
 
     query = M.findOneAndUpdate();
     assert.strictEqual(undefined, query.options.new);
@@ -666,7 +723,7 @@ describe('model: findOneAndUpdate:', function() {
     assert.ok(fruit instanceof mongoose.Document);
   });
 
-  it('return rawResult when doing an upsert & new=false gh-7770', async function() {
+  it('return includeResultMetadata when doing an upsert & new=false gh-7770', async function() {
     const thingSchema = new Schema({
       _id: String,
       flag: {
@@ -678,13 +735,13 @@ describe('model: findOneAndUpdate:', function() {
     const Thing = db.model('Test', thingSchema);
     const key = 'some-new-id';
 
-    const rawResult = await Thing.findOneAndUpdate({ _id: key }, { $set: { flag: false } }, { upsert: true, new: false, rawResult: true }).exec();
-    assert.equal(rawResult.lastErrorObject.updatedExisting, false);
+    const res1 = await Thing.findOneAndUpdate({ _id: key }, { $set: { flag: false } }, { upsert: true, new: false, includeResultMetadata: true }).exec();
+    assert.equal(res1.lastErrorObject.updatedExisting, false);
 
-    const rawResult2 = await Thing.findOneAndUpdate({ _id: key }, { $set: { flag: true } }, { upsert: true, new: false, rawResult: true }).exec();
-    assert.equal(rawResult2.lastErrorObject.updatedExisting, true);
-    assert.equal(rawResult2.value._id, key);
-    assert.equal(rawResult2.value.flag, false);
+    const res2 = await Thing.findOneAndUpdate({ _id: key }, { $set: { flag: true } }, { upsert: true, new: false, includeResultMetadata: true }).exec();
+    assert.equal(res2.lastErrorObject.updatedExisting, true);
+    assert.equal(res2.value._id, key);
+    assert.equal(res2.value.flag, false);
   });
 
 
@@ -701,7 +758,7 @@ describe('model: findOneAndUpdate:', function() {
     assert.equal(null, doc.name);
   });
 
-  it('can do various deep equal checks (lodash.isEqual, lodash.isEqualWith, assert.deepEqual, utils.deepEqual) on object id after findOneAndUpdate (gh-2070)', async function() {
+  it('can do various deep equal checks (lodash.isEqual, util.isDeepStrictEqual, lodash.isEqualWith, assert.deepEqual, utils.deepEqual) on object id after findOneAndUpdate (gh-2070)', async function() {
     const userSchema = new Schema({
       name: String,
       contacts: [{
@@ -725,19 +782,21 @@ describe('model: findOneAndUpdate:', function() {
     );
 
     assert.deepEqual(doc.contacts[0].account, a2._id);
-    assert.ok(Utils.deepEqual(doc.contacts[0].account, a2._id));
+    assert.ok(utils.deepEqual(doc.contacts[0].account, a2._id));
     assert.ok(isEqualWith(doc.contacts[0].account, a2._id, compareBuffers));
     // Re: commends on https://github.com/mongodb/js-bson/commit/aa0b54597a0af28cce3530d2144af708e4b66bf0
     // Deep equality checks no longer work as expected with node 0.10.
     // Please file an issue if this is a problem for you
     assert.ok(isEqual(doc.contacts[0].account, a2._id));
+    assert.ok(isDeepStrictEqual(doc.contacts[0].account, a2._id));
 
     const doc2 = await User.findOne({ name: 'parent' });
 
     assert.deepEqual(doc2.contacts[0].account, a2._id);
-    assert.ok(Utils.deepEqual(doc2.contacts[0].account, a2._id));
+    assert.ok(utils.deepEqual(doc2.contacts[0].account, a2._id));
     assert.ok(isEqualWith(doc2.contacts[0].account, a2._id, compareBuffers));
     assert.ok(isEqual(doc2.contacts[0].account, a2._id));
+    assert.ok(isDeepStrictEqual(doc2.contacts[0].account, a2._id));
 
     function compareBuffers(a, b) {
       if (Buffer.isBuffer(a) && Buffer.isBuffer(b)) {
@@ -960,6 +1019,44 @@ describe('model: findOneAndUpdate:', function() {
       assert.equal(1, count);
     });
 
+    it('includes dot-notation filter paths in upserted document with sub-schema default (gh-16030)', async function() {
+      const addressSchema = new Schema({ city: String });
+      const userSchema = new Schema({
+        firstName: String,
+        lastName: String,
+        address: { type: addressSchema, default: {} }
+      });
+      const User = db.model('User', userSchema);
+
+      const foundUser = await User.findOneAndUpdate(
+        { 'address.city': 'New York' },
+        { $setOnInsert: { firstName: 'John' }, $set: { lastName: 'Smith' } },
+        { upsert: true, new: true, setDefaultsOnInsert: true });
+
+      assert.equal(foundUser.lastName, 'Smith');
+      assert.equal(foundUser.firstName, 'John');
+      assert.equal(foundUser.address.city, 'New York');
+    });
+
+    it('applies sub-schema default on upsert when filter has no dot-notation path (gh-16030)', async function() {
+      const addressSchema = new Schema({ city: String });
+      const userSchema = new Schema({
+        firstName: String,
+        lastName: String,
+        address: { type: addressSchema, default: { city: 'Chicago' } }
+      });
+      const User = db.model('User', userSchema);
+
+      const foundUser = await User.findOneAndUpdate(
+        { firstName: 'John' },
+        { $set: { lastName: 'Smith' } },
+        { upsert: true, new: true, setDefaultsOnInsert: true });
+
+      assert.equal(foundUser.lastName, 'Smith');
+      assert.equal(foundUser.firstName, 'John');
+      assert.equal(foundUser.address.city, 'Chicago');
+    });
+
     it('skips setting defaults within maps (gh-7909)', async function() {
       const socialMediaHandleSchema = Schema({ links: [String] });
       const profileSchema = Schema({
@@ -1011,6 +1108,34 @@ describe('model: findOneAndUpdate:', function() {
       assert.equal(Object.keys(error.errors).length, 1);
       assert.equal(Object.keys(error.errors)[0], 'topping');
       assert.equal(error.errors.topping.message, 'Validator failed for path `topping` with value `bacon`');
+    });
+
+    it('applies allowNull validators with runValidators', async function() {
+      const schema = new Schema({
+        name: { type: String, allowNull: false }
+      });
+      const Model = db.model('Test', schema);
+      const doc = await Model.create({ name: 'test' });
+      const updateOptions = { runValidators: true, returnDocument: 'after' };
+
+      const err = await Model.findOneAndUpdate(
+        { _id: doc._id },
+        { $set: { name: null } },
+        updateOptions
+      ).then(() => null, err => err);
+
+      assert.ok(err);
+      assert.ok(err.errors['name']);
+      assert.equal(err.errors['name'].kind, 'allowNull');
+
+      // Mongoose strips out `name: undefined` from the update, so `name` will not be unset
+      // or set to null.
+      const updatedDoc = await Model.findOneAndUpdate(
+        { _id: doc._id },
+        { $set: { name: undefined } },
+        updateOptions
+      );
+      assert.strictEqual(updatedDoc.name, 'test');
     });
 
     it('validators handle $unset and $setOnInsert', async function() {
@@ -1261,13 +1386,13 @@ describe('model: findOneAndUpdate:', function() {
   });
 
   describe('bug fixes', function() {
-    it('passes raw result if rawResult specified (gh-4925)', async function() {
+    it('passes raw result if includeResultMetadata specified (gh-4925)', async function() {
       const testSchema = new mongoose.Schema({
         test: String
       });
 
       const TestModel = db.model('Test', testSchema);
-      const options = { upsert: true, new: true, rawResult: true };
+      const options = { upsert: true, new: true, includeResultMetadata: true };
       const update = { $set: { test: 'abc' } };
 
       const res = await TestModel.findOneAndUpdate({}, update, options).exec();
@@ -1334,7 +1459,6 @@ describe('model: findOneAndUpdate:', function() {
       const opts = {
         new: true,
         upsert: false,
-        passRawResult: false,
         overwrite: false,
         runValidators: true
       };
@@ -1360,8 +1484,10 @@ describe('model: findOneAndUpdate:', function() {
       const update = { $push: { addresses: { street: 'not a num' } } };
       const error = await Person.findOneAndUpdate({}, update).then(() => null, err => err);
       assert.ok(error.message.indexOf('street') !== -1);
-      assert.equal(error.reason.message,
-        'Cast to Number failed for value "not a num" (type string) at path "street"');
+      assert.match(
+        error.reason.message,
+        /^Cast to Number failed for value "not a num" \(type string\) at path "street"/
+      );
     });
 
     it('projection option as alias for fields (gh-4315)', async function() {
@@ -2080,5 +2206,373 @@ describe('model: findOneAndUpdate:', function() {
 
     const doc = await MyModel.findOne();
     assert.deepEqual(doc.toObject().grades, [95, 100, 90]);
+  });
+
+  it('throws error if filter is not an object (gh-13264)', async function() {
+    const schema = new Schema({ name: String });
+    const Model = db.model('Test', schema);
+
+    const err = await Model.findOneAndUpdate('foobar', { name: 'foo' }).then(() => null, err => err);
+    assert.ok(err);
+    assert.equal(err.name, 'ObjectParameterError');
+  });
+
+  it('handles plus path in projection (gh-13413)', async function() {
+    const testSchema = new mongoose.Schema({
+      name: String,
+      nickName: {
+        type: String,
+        select: false
+      }
+    });
+    const Test = db.model('Test', testSchema);
+
+    const entry = await Test.create({
+      name: 'Test Testerson',
+      nickName: 'Quiz'
+    });
+
+    let res = await Test.findOneAndUpdate(
+      { _id: entry._id },
+      { $set: { name: 'Test' } },
+      { projection: '+nickName', returnDocument: 'after' }
+    );
+    assert.equal(res.name, 'Test');
+    assert.equal(res.nickName, 'Quiz');
+
+    res = await Test.findOneAndDelete(
+      { _id: entry._id },
+      { projection: '+nickName', returnDocument: 'before' }
+    );
+    assert.equal(res.name, 'Test');
+    assert.equal(res.nickName, 'Quiz');
+  });
+
+  it('allows setting paths with dots in non-strict paths (gh-13434) (gh-10200)', async function() {
+    const testSchema = new mongoose.Schema({
+      name: String,
+      info: Object
+    }, { strict: false });
+    const Test = db.model('Test', testSchema);
+
+    const doc = await Test.findOneAndUpdate(
+      {},
+      {
+        name: 'Test Testerson',
+        info: { 'second.name': 'Quiz' },
+        info2: { 'second.name': 'Quiz' }
+      },
+      { new: true, upsert: true }
+    ).lean();
+
+    assert.ok(doc);
+    assert.equal(doc.info['second.name'], 'Quiz');
+    assert.equal(doc.info2['second.name'], 'Quiz');
+  });
+  it('supports the `includeResultMetadata` option (gh-13539)', async function() {
+    const testSchema = new mongoose.Schema({
+      name: String
+    });
+    const Test = db.model('Test', testSchema);
+    await Test.create({
+      name: 'Test'
+    });
+    const doc = await Test.findOneAndUpdate(
+      { name: 'Test' },
+      { name: 'Test Testerson' },
+      { new: true, upsert: true, includeResultMetadata: false }
+    );
+    assert.equal(doc.ok, undefined);
+    assert.equal(doc.name, 'Test Testerson');
+
+    const data = await Test.findOneAndUpdate(
+      { name: 'Test Testerson' },
+      { name: 'Test' },
+      { new: true, upsert: true, includeResultMetadata: true }
+    );
+    assert(data.ok);
+    assert.equal(data.value.name, 'Test');
+  });
+
+  it('successfully runs findOneAndUpdate with no update and versionKey set to false (gh-13783)', async function() {
+    const exampleSchema = new mongoose.Schema({
+      name: String
+    }, { versionKey: false });
+
+    const ExampleModel = db.model('Example', exampleSchema);
+
+    const document = await ExampleModel.findOneAndUpdate(
+      { name: 'test' },
+      {},
+      { upsert: true, returnDocument: 'after', returnOriginal: false }
+    );
+    assert.ok(document);
+    assert.equal(document.name, 'test');
+  });
+
+  it('skips adding defaults to filter when passing empty update (gh-13962)', async function() {
+    const schema = new Schema({
+      myField: Number,
+      defaultField: { type: String, default: 'default' }
+    }, { versionKey: false });
+    const Test = db.model('Test', schema);
+
+    await Test.create({ myField: 1, defaultField: 'some non-default value' });
+
+    const updated = await Test.findOneAndUpdate(
+      { myField: 1 },
+      {},
+      { upsert: true, returnDocument: 'after' }
+    );
+    assert.equal(updated.defaultField, 'some non-default value');
+  });
+
+  it('sets CastError path to full path (gh-14114)', async function() {
+    const testSchema = new mongoose.Schema({
+      id: mongoose.Schema.Types.ObjectId,
+      name: String,
+      accessories: [
+        {
+          isEnabled: Boolean,
+          additionals: [
+            {
+              k: String,
+              v: Number
+            }
+          ]
+        }
+      ]
+    });
+    const Test = db.model('Test', testSchema);
+    const err = await Test.findOneAndUpdate(
+      {},
+      {
+        $set: {
+          'accessories.0.additionals.0.k': ['test']
+        }
+      }
+    ).then(() => null, err => err);
+    assert.ok(err);
+    assert.equal(err.name, 'CastError');
+    assert.equal(err.path, 'accessories.0.additionals.0.k');
+  });
+
+  it('only skips update validators for paths underneath an already validated subdocument', async function() {
+    let validateNameCalls = 0;
+    let validateSubCalls = 0;
+
+    const subSchema = new Schema({
+      v: {
+        type: String,
+        validate: function() {
+          validateSubCalls++;
+          return true;
+        }
+      }
+    });
+    const listSchema = new Schema({
+      name: {
+        type: String,
+        validate: function() {
+          validateNameCalls++;
+          return true;
+        }
+      },
+      kind: { type: String, enum: ['a', 'b'] },
+      sub: subSchema,
+      items: [{ kind: { type: String, enum: ['a', 'b'] } }]
+    });
+    const Test = db.model('Test', new Schema({ lists: [listSchema] }));
+
+    const $set = {};
+    for (let i = 0; i < 10; ++i) {
+      $set['lists.' + i] = { name: 'list ' + i, kind: 'a', sub: { v: 'v' }, items: [{ kind: i === 1 ? 'invalid' : 'a' }] };
+    }
+    // `lists.10.kind` is not underneath `lists.1`, so it must still be validated
+    $set['lists.10.kind'] = 'invalid';
+
+    const err = await Test.findOneAndUpdate(
+      { _id: new mongoose.Types.ObjectId() },
+      { $set },
+      { runValidators: true }
+    ).then(() => null, err => err);
+
+    assert.equal(validateNameCalls, 10);
+    assert.equal(validateSubCalls, 10);
+    assert.ok(err);
+    assert.equal(err.name, 'ValidationError');
+    assert.deepStrictEqual(Object.keys(err.errors).sort(), ['lists.1.items.0.kind', 'lists.10.kind']);
+  });
+
+  describe('deprecation warnings for `new` and `returnOriginal` options (gh-15972)', function() {
+    afterEach(function() {
+      sinon.restore();
+    });
+
+    describe('query operation warnings', function() {
+      const operations = [
+        { operationName: 'findOneAndUpdate', filter: {} },
+        { operationName: 'findByIdAndUpdate', filter: '0'.repeat(24) },
+        { operationName: 'findOneAndReplace', filter: {} }
+      ];
+
+      const deprecatedOptions = [
+        { options: { new: true }, optionName: 'new', replacement: 'returnDocument: \'after\'' },
+        { options: { new: false }, optionName: 'new', replacement: 'returnDocument: \'before\'' },
+        { options: { returnOriginal: true }, optionName: 'returnOriginal', replacement: 'returnDocument: \'before\'' },
+        { options: { returnOriginal: false }, optionName: 'returnOriginal', replacement: 'returnDocument: \'after\'' }
+      ];
+
+      for (const { operationName, filter } of operations) {
+        for (const { options, optionName, replacement } of deprecatedOptions) {
+          it(`${operationName}: emits deprecation warning when using \`${JSON.stringify(options)}\``, async function() {
+            // Arrange
+            const { User } = createTestContext();
+
+            // Act
+            await User[operationName](filter, { name: 'new value' }, options);
+
+            // Assert
+            const calls = utils.warn.getCalls();
+            assert.strictEqual(calls.length, 1);
+            const [message] = calls[0].args;
+            assert.ok(
+              message.includes(optionName) && message.includes('returnDocument'),
+              `Expected warning to mention '${optionName}' and 'returnDocument', got: ${message}`
+            );
+            assert.ok(
+              message.includes(replacement),
+              `Expected warning to suggest "${replacement}", got: ${message}`
+            );
+          });
+        }
+
+        it(`${operationName}: does not emit warning when using \`returnDocument\``, async function() {
+          // Arrange
+          const { User } = createTestContext();
+
+          // Act
+          await User[operationName](filter, { name: 'updated' }, { returnDocument: 'after' });
+
+          // Assert
+          assert.strictEqual(utils.warn.getCalls().length, 0);
+        });
+      }
+
+      it('default returnDocument behavior returns document before update', async function() {
+        // Arrange
+        const { User } = createTestContext();
+        await User.create({ name: 'original' });
+
+        // Act
+        const result = await User.findOneAndUpdate({ name: 'original' }, { name: 'updated' });
+
+        // Assert
+        assert.strictEqual(result.name, 'original');
+        assert.strictEqual(utils.warn.getCalls().length, 0);
+      });
+
+      function createTestContext() {
+        sinon.stub(utils, 'warn');
+        const userSchema = new Schema({ name: String });
+        const User = db.model('User', userSchema);
+        return { User };
+      }
+    });
+
+    describe('mongoose.set() options', function() {
+      let m;
+      afterEach(() => m?.disconnect());
+
+      it('mongoose.set(\'returnOriginal\') emits deprecation warning', function() {
+        // Arrange
+        m = new mongoose.Mongoose();
+        sinon.stub(utils, 'warn');
+
+        // Act
+        m.set('returnOriginal', false);
+
+        // Assert
+        const calls = utils.warn.getCalls();
+        assert.strictEqual(calls.length, 1);
+        const [message] = calls[0].args;
+        assert.ok(
+          message.includes('returnOriginal') && message.includes('returnDocument'),
+          `Expected warning to mention 'returnOriginal' and 'returnDocument', got: ${message}`
+        );
+      });
+
+      it('mongoose.set(\'returnDocument\') does not emit warning', function() {
+        // Arrange
+        m = new mongoose.Mongoose();
+        sinon.stub(utils, 'warn');
+
+        // Act
+        m.set('returnDocument', 'after');
+
+        // Assert
+        assert.strictEqual(utils.warn.getCalls().length, 0);
+      });
+
+      it('mongoose.set(\'returnDocument\', \'after\') returns updated document', async function() {
+        // Arrange
+        const { User } = await createTestContext({ returnDocument: 'after' });
+        const user = await User.create({ name: 'original' });
+
+        // Act
+        const result = await User.findOneAndUpdate({ _id: user._id }, { name: 'updated' });
+
+        // Assert
+        assert.strictEqual(result.name, 'updated');
+      });
+
+      it('mongoose.set(\'returnDocument\', \'before\') returns original document', async function() {
+        // Arrange
+        const { User } = await createTestContext({ returnDocument: 'before' });
+        const user = await User.create({ name: 'original' });
+
+        // Act
+        const result = await User.findOneAndUpdate({ _id: user._id }, { name: 'updated' });
+
+        // Assert
+        assert.strictEqual(result.name, 'original');
+      });
+
+      it('throws error when setting returnOriginal after returnDocument is set', function() {
+        // Arrange
+        m = new mongoose.Mongoose();
+        m.set('returnDocument', 'after');
+
+        // Act & Assert
+        assert.throws(
+          () => m.set('returnOriginal', false),
+          /Cannot set `returnOriginal` when `returnDocument` is already set/
+        );
+      });
+
+      it('throws error when setting returnDocument after returnOriginal is set', function() {
+        // Arrange
+        m = new mongoose.Mongoose();
+        sinon.stub(utils, 'warn');
+        m.set('returnOriginal', false);
+
+        // Act & Assert
+        assert.throws(
+          () => m.set('returnDocument', 'after'),
+          /Cannot set `returnDocument` when `returnOriginal` is already set/
+        );
+      });
+
+      async function createTestContext(globalOptions) {
+        m = new mongoose.Mongoose();
+        for (const [key, value] of Object.entries(globalOptions)) {
+          m.set(key, value);
+        }
+        const conn = await m.connect(start.uri);
+        const userSchema = new m.Schema({ name: String });
+        const User = conn.model('User', userSchema);
+        return { User };
+      }
+    });
   });
 });

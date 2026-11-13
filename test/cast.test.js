@@ -9,7 +9,7 @@ require('./common');
 const Schema = require('../lib/schema');
 const assert = require('assert');
 const cast = require('../lib/cast');
-const ObjectId = require('bson').ObjectId;
+const ObjectId = require('mongodb/lib/bson').ObjectId;
 
 describe('cast: ', function() {
   describe('when casting an array', function() {
@@ -104,6 +104,26 @@ describe('cast: ', function() {
     });
   });
 
+  describe('geo queries', function() {
+    it('casts object-shaped geo values with scalar leaves (gh-16376)', function() {
+      const schema = new Schema({ name: String });
+
+      const res = cast(schema, {
+        loc: { $geoIntersects: { foo: '5' } }
+      }, { strictQuery: false });
+      assert.strictEqual(res.loc.$geoIntersects.foo, 5);
+    });
+
+    it('still casts array-shaped geo values (gh-16376)', function() {
+      const schema = new Schema({ name: String });
+
+      const res = cast(schema, {
+        loc: { $geoIntersects: { coordinates: ['1', '2'] } }
+      }, { strictQuery: false });
+      assert.deepStrictEqual(res.loc.$geoIntersects.coordinates, [1, 2]);
+    });
+  });
+
   describe('bitwise query operators: ', function() {
     it('with a number', function() {
       const schema = new Schema({ x: Buffer });
@@ -121,6 +141,12 @@ describe('cast: ', function() {
       const schema = new Schema({ x: Number });
       assert.deepEqual(cast(schema, { x: { $bitsAnyClear: Buffer.from([3]) } }),
         { x: { $bitsAnyClear: Buffer.from([3]) } });
+    });
+
+    it('with int32 (gh-15170)', function() {
+      const schema = new Schema({ x: 'Int32' });
+      assert.deepEqual(cast(schema, { x: { $bitsAnySet: 3 } }),
+        { x: { $bitsAnySet: 3 } });
     });
 
     it('throws when invalid', function() {
@@ -160,6 +186,33 @@ describe('cast: ', function() {
     });
   });
 
+  it('casts $comment (gh-14576)', function() {
+    const schema = new Schema({ name: String });
+
+    let res = cast(schema, {
+      $comment: 'test'
+    });
+    assert.deepStrictEqual(res, { $comment: 'test' });
+
+    res = cast(schema, {
+      $comment: 42
+    });
+    assert.deepStrictEqual(res, { $comment: '42' });
+
+    assert.throws(
+      () => cast(schema, {
+        $comment: { name: 'taco' }
+      }),
+      /\$comment/
+    );
+
+    const schema2 = new Schema({ $comment: Number });
+    res = cast(schema2, {
+      $comment: 42
+    });
+    assert.deepStrictEqual(res, { $comment: 42 });
+  });
+
   it('avoids setting stripped out nested schema values to undefined (gh-11291)', function() {
     const nested = new Schema({}, {
       id: false,
@@ -192,5 +245,41 @@ describe('cast: ', function() {
     assert.deepEqual(res, {
       name: 'foo'
     });
+  });
+
+  it('handles $in with discriminators if $in has exactly 1 element (gh-13492)', function() {
+    const itemStateFooSchema = new Schema({
+      fieldFoo: String
+    });
+
+    const itemSchema = new Schema({
+      state: new Schema(
+        {
+          field: String
+        },
+        {
+          discriminatorKey: 'type'
+        }
+      )
+    });
+
+    itemSchema.path('state').discriminator('FOO', itemStateFooSchema);
+
+    const res = cast(itemSchema, {
+      'state.type': {
+        $in: ['FOO']
+      },
+      'state.fieldFoo': 44
+    });
+    assert.deepStrictEqual(res, {
+      'state.type': { $in: ['FOO'] },
+      'state.fieldFoo': '44'
+    });
+  });
+
+  it('treats unknown operators as passthrough (gh-15170)', function() {
+    const schema = new Schema({ x: Boolean });
+    assert.deepEqual(cast(schema, { x: { $someConditional: 'true' } }),
+      { x: { $someConditional: true } });
   });
 });

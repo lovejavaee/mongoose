@@ -135,14 +135,12 @@ describe('model middleware', function() {
     });
     let count = 0;
 
-    schema.pre('validate', function(next) {
+    schema.pre('validate', function() {
       assert.equal(count++, 0);
-      next();
     });
 
-    schema.pre('save', function(next) {
+    schema.pre('save', function() {
       assert.equal(count++, 1);
-      next();
     });
 
     const Book = db.model('Test', schema);
@@ -162,14 +160,13 @@ describe('model middleware', function() {
       called++;
     });
 
-    schema.pre('save', function(next) {
+    schema.pre('save', function() {
       called++;
-      next(new Error('Error 101'));
+      throw new Error('Error 101');
     });
 
-    schema.pre('deleteOne', { document: true, query: false }, function(next) {
+    schema.pre('deleteOne', { document: true, query: false }, function() {
       called++;
-      next();
     });
 
     const TestMiddleware = db.model('TestMiddleware', schema);
@@ -242,11 +239,10 @@ describe('model middleware', function() {
     const childPreCallsByName = {};
     let parentPreCalls = 0;
 
-    childSchema.pre('save', function(next) {
+    childSchema.pre('save', function() {
       childPreCallsByName[this.name] = childPreCallsByName[this.name] || 0;
       ++childPreCallsByName[this.name];
       ++childPreCalls;
-      next();
     });
 
     const parentSchema = new mongoose.Schema({
@@ -254,9 +250,8 @@ describe('model middleware', function() {
       children: [childSchema]
     });
 
-    parentSchema.pre('save', function(next) {
+    parentSchema.pre('save', function() {
       ++parentPreCalls;
-      next();
     });
 
     const Parent = db.model('Parent', parentSchema);
@@ -293,7 +288,7 @@ describe('model middleware', function() {
       title: String
     });
 
-    schema.post('save', function() {
+    schema.post('save', function postSaveTestError() {
       throw new Error('woops!');
     });
 
@@ -311,32 +306,6 @@ describe('model middleware', function() {
     }
   });
 
-  it('sync error in pre save after next() (gh-3483)', async function() {
-    const schema = new Schema({
-      title: String
-    });
-
-    let called = 0;
-
-    schema.pre('save', function(next) {
-      next();
-      // This error will not get reported, because you already called next()
-      throw new Error('woops!');
-    });
-
-    schema.pre('save', function(next) {
-      ++called;
-      next();
-    });
-
-    const TestMiddleware = db.model('Test', schema);
-
-    const test = new TestMiddleware({ title: 'Test' });
-
-    await test.save();
-    assert.equal(called, 1);
-  });
-
   it('validate + remove', async function() {
     const schema = new Schema({
       title: String
@@ -347,14 +316,14 @@ describe('model middleware', function() {
         preRemove = 0,
         postRemove = 0;
 
-    schema.pre('validate', function(next) {
+    schema.pre('validate', function() {
       ++preValidate;
-      next();
     });
 
-    schema.pre('deleteOne', { document: true, query: false }, function(next) {
+    schema.pre('deleteOne', { document: true, query: false }, function(doc, opts) {
       ++preRemove;
-      next();
+      assert.strictEqual(opts.testOption, 'value');
+      opts.testOption = 'something else';
     });
 
     schema.post('validate', function(doc) {
@@ -377,7 +346,7 @@ describe('model middleware', function() {
     assert.equal(preRemove, 0);
     assert.equal(postRemove, 0);
 
-    await test.deleteOne();
+    await test.deleteOne({ testOption: 'value' });
     assert.equal(preValidate, 1);
     assert.equal(postValidate, 1);
     assert.equal(preRemove, 1);
@@ -416,6 +385,36 @@ describe('model middleware', function() {
     assert.equal(postCalled, 1);
   });
 
+  it('static hooks async stack traces (gh-15317) (gh-5982)', async function staticHookAsyncStackTrace() {
+    const schema = new Schema({
+      name: String
+    });
+
+    schema.statics.findByName = function() {
+      return this.find({ otherProp: { $notAnOperator: 'value' } });
+    };
+
+    let preCalled = 0;
+    schema.pre('findByName', function() {
+      ++preCalled;
+    });
+
+    let postCalled = 0;
+    schema.post('findByName', function() {
+      ++postCalled;
+    });
+
+    const Model = db.model('Test', schema);
+
+    await Model.create({ name: 'foo' });
+
+    const err = await Model.findByName('foo').then(() => null, err => err);
+    assert.equal(err.name, 'MongoServerError');
+    assert.ok(err.stack.includes('staticHookAsyncStackTrace'));
+    assert.equal(preCalled, 1);
+    assert.equal(postCalled, 0);
+  });
+
   it('deleteOne hooks (gh-7538)', async function() {
     const schema = new Schema({
       name: String
@@ -447,14 +446,266 @@ describe('model middleware', function() {
 
     await doc.deleteOne();
 
-    assert.equal(queryPreCalled, 0);
+    assert.equal(queryPreCalled, 1);
     assert.equal(preCalled, 1);
     assert.equal(postCalled, 1);
 
     await Model.deleteOne();
 
-    assert.equal(queryPreCalled, 1);
+    assert.equal(queryPreCalled, 2);
     assert.equal(preCalled, 1);
     assert.equal(postCalled, 1);
+  });
+
+  describe('createCollection middleware', function() {
+    it('calls createCollection hooks', async function() {
+      const schema = new Schema({ name: String }, { autoCreate: true });
+
+      const pre = [];
+      const post = [];
+      schema.pre('createCollection', function() {
+        pre.push(this);
+      });
+      schema.post('createCollection', function() {
+        post.push(this);
+      });
+
+      const Test = db.model('Test', schema);
+      await Test.init();
+      assert.equal(pre.length, 1);
+      assert.equal(pre[0], Test);
+      assert.equal(post.length, 1);
+      assert.equal(post[0], Test);
+    });
+
+    it('allows skipping createCollection from hooks', async function() {
+      const schema = new Schema({ name: String }, { autoCreate: true });
+
+      schema.pre('createCollection', function() {
+        throw mongoose.skipMiddlewareFunction();
+      });
+
+      const Test = db.model('CreateCollectionHookTest', schema);
+      await Test.init();
+      const collections = await db.listCollections();
+      assert.equal(collections.length, 0);
+    });
+  });
+
+  describe('bulkWrite middleware', function() {
+    it('calls bulkWrite hooks', async function() {
+      const schema = new Schema({ name: String });
+
+      const pre = [];
+      const post = [];
+      schema.pre('bulkWrite', function(ops) {
+        pre.push(ops);
+      });
+      schema.post('bulkWrite', function(res) {
+        post.push(res);
+      });
+
+      const Test = db.model('Test', schema);
+      await Test.bulkWrite([{
+        updateOne: {
+          filter: { name: 'foo' },
+          update: { $set: { name: 'bar' } }
+        }
+      }]);
+      assert.equal(pre.length, 1);
+      assert.deepStrictEqual(pre[0], [{
+        updateOne: {
+          filter: { name: 'foo' },
+          update: { $set: { name: 'bar' } }
+        }
+      }]);
+      assert.equal(post.length, 1);
+      assert.equal(post[0].constructor.name, 'BulkWriteResult');
+    });
+
+    it('allows updating ops', async function() {
+      const schema = new Schema({ name: String, prop: String });
+
+      schema.pre('bulkWrite', function(ops) {
+        ops[0].updateOne.filter.name = 'baz';
+      });
+
+      const Test = db.model('Test', schema);
+      const { _id } = await Test.create({ name: 'baz' });
+      await Test.bulkWrite([{
+        updateOne: {
+          filter: { name: 'foo' },
+          update: { $set: { prop: 'test prop value' } }
+        }
+      }]);
+      const { prop } = await Test.findById(_id).orFail();
+      assert.equal(prop, 'test prop value');
+    });
+
+    it('supports error handlers', async function() {
+      const schema = new Schema({ name: String, prop: String });
+
+      const errors = [];
+      schema.post('bulkWrite', function(err, res, next) {
+        errors.push(err);
+        next();
+      });
+
+      const Test = db.model('Test', schema);
+      const { _id } = await Test.create({ name: 'baz' });
+      await assert.rejects(
+        Test.bulkWrite([{
+          insertOne: {
+            document: {
+              _id
+            }
+          }
+        }]),
+        /duplicate key error/
+      );
+      assert.equal(errors.length, 1);
+      assert.equal(errors[0].name, 'MongoBulkWriteError');
+      assert.ok(errors[0].message.includes('duplicate key error'), errors[0].message);
+    });
+
+    it('post save error handler gets doc as param (gh-15480)', async function() {
+      const userSchema = new mongoose.Schema({
+        name: String,
+        arr: [String]
+      });
+
+      let postSaveErrorCalled = false;
+      let postSaveErrorName = null;
+      let postSaveErrorDoc = undefined;
+
+      // Add post-save error handler
+      userSchema.post('save', function(err, doc, next) {
+        postSaveErrorCalled = true;
+        postSaveErrorName = err && err.name;
+        postSaveErrorDoc = doc;
+        next();
+      });
+
+      const User = db.model('User', userSchema);
+
+      const original = await User.create({ name: 'Alice' });
+      await User.updateOne({ _id: original._id }, { $unset: { arr: 1 } });
+
+      const docA = await User.findById(original._id);
+      const docB = await User.findById(original._id);
+
+      // Modify and save docA to bump __v
+      docA.name = 'Alice A';
+      await docA.save();
+
+      // Now attempt to save docB, which has stale __v
+      docB.name = 'Alice B';
+      const err = await docB.save().then(() => null, err => err);
+      assert.ok(err);
+
+      assert.ok(postSaveErrorCalled, 'post save error handler should be called');
+      assert.equal(postSaveErrorName, 'VersionError');
+      assert.strictEqual(postSaveErrorDoc, docB);
+    });
+
+    it('supports skipping wrapped function', async function() {
+      const schema = new Schema({ name: String, prop: String });
+
+      schema.pre('bulkWrite', function() {
+        throw mongoose.skipMiddlewareFunction('skipMiddlewareFunction test');
+      });
+
+      const Test = db.model('Test', schema);
+      const { _id } = await Test.create({ name: 'baz' });
+      const res = await Test.bulkWrite([{
+        insertOne: {
+          document: {
+            _id
+          }
+        }
+      }]);
+      assert.strictEqual(res, 'skipMiddlewareFunction test');
+    });
+
+    describe('pre-hook errors should propagate (gh-15881)', function() {
+      for (const ordered of [true, false]) {
+        it(`bulkWrite() should throw when pre-hook throws an error (ordered: ${ordered})`, async function() {
+          // Arrange
+          const preHookError = new Error('Pre-hook error - should stop bulkWrite');
+          const { User } = createTestContext({ preHookError });
+
+          // Act
+          const error = await User.bulkWrite([{
+            insertOne: { document: { name: 'Sam' } }
+          }], { ordered }).then(() => null, err => err);
+
+          // Assert
+          assert.ok(error);
+          assert.equal(error.message, preHookError.message);
+        });
+      }
+
+      it('bulkWrite() should not execute operations when pre-hook throws', async function() {
+        // Arrange
+        const preHookError = new Error('Pre-hook error - should stop bulkWrite');
+        const { User } = createTestContext({ preHookError });
+
+        // Act
+        await User.bulkWrite([{
+          insertOne: { document: { name: 'Sam' } }
+        }]).catch(() => null);
+
+        // Assert
+        const count = await User.countDocuments();
+        assert.equal(count, 0);
+      });
+
+      it('bulkWrite() should call error post hook when pre-hook throws', async function() {
+        // Arrange
+        let errorPostHookCalled = false;
+        let normalPostHookCalled = false;
+        const preHookError = new Error('Pre-hook error - should stop bulkWrite');
+        const { User } = createTestContext({
+          preHookError,
+          postHook: function() {
+            normalPostHookCalled = true;
+          },
+          errorPostHook: function(error, _res, next) {
+            if (error && error.message === preHookError.message) {
+              errorPostHookCalled = true;
+            }
+            next(error);
+          }
+        });
+
+        // Act
+        await User.bulkWrite([{
+          insertOne: { document: { name: 'Sam' } }
+        }]).catch(() => {});
+
+        // Assert
+        assert.equal(errorPostHookCalled, true);
+        assert.equal(normalPostHookCalled, false);
+      });
+
+      function createTestContext(options) {
+        const schema = new Schema({ name: String });
+
+        schema.pre('bulkWrite', function() {
+          throw options.preHookError;
+        });
+
+        if (options.postHook) {
+          schema.post('bulkWrite', options.postHook);
+        }
+
+        if (options.errorPostHook) {
+          schema.post('bulkWrite', options.errorPostHook);
+        }
+
+        const User = db.model('User', schema);
+        return { User };
+      }
+    });
   });
 });

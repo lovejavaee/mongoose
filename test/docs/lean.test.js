@@ -41,16 +41,23 @@ describe('Lean Tutorial', function() {
     // To enable the `lean` option for a query, use the `lean()` function.
     const leanDoc = await MyModel.findOne().lean();
 
+    // acquit:ignore:start
+    // The `normalDoc.$__.middleware` property is an internal Mongoose object that stores middleware functions.
+    // These functions cannot be cloned by `v8.serialize()`, which causes the method to throw an error.
+    // Since this test only compares the serialized size of the document, it is safe to delete this property
+    // to prevent the crash. This operation does not affect the document's data or behavior in this context.
+    delete normalDoc.$__.middleware;
+    // acquit:ignore:end
     v8Serialize(normalDoc).length; // approximately 180
-    v8Serialize(leanDoc).length; // 32, about 5x smaller!
+    v8Serialize(leanDoc).length; // approximately 55, about 3x smaller!
 
     // In case you were wondering, the JSON form of a Mongoose doc is the same
     // as the POJO. This additional memory only affects how much memory your
     // Node.js process uses, not how much data is sent over the network.
     JSON.stringify(normalDoc).length === JSON.stringify(leanDoc).length; // true
     // acquit:ignore:start
-    assert.ok(v8Serialize(normalDoc).length >= 150 && v8Serialize(normalDoc).length <= 200, v8Serialize(normalDoc).length);
-    assert.equal(v8Serialize(leanDoc).length, 32);
+    assert.ok(v8Serialize(normalDoc).length >= 150 && v8Serialize(normalDoc).length <= 210, v8Serialize(normalDoc).length);
+    assert.ok(v8Serialize(leanDoc).length >= 55 && v8Serialize(leanDoc).length <= 68, v8Serialize(leanDoc).length);
     assert.equal(JSON.stringify(normalDoc).length, JSON.stringify(leanDoc).length);
     // acquit:ignore:end
   });
@@ -201,6 +208,37 @@ describe('Lean Tutorial', function() {
     // acquit:ignore:start
     assert.equal(group.members[0].name, 'Benjamin Sisko');
     assert.equal(group.members[1].name, 'Kira Nerys');
+    // acquit:ignore:end
+  });
+
+  it('bigint', async function() {
+    const Person = mongoose.model('Person', new mongoose.Schema({
+      name: String,
+      age: BigInt
+    }));
+    // acquit:ignore:start
+    await Person.deleteMany({});
+    // acquit:ignore:end
+    // Mongoose will convert `age` to a BigInt
+    const { age } = await Person.create({ name: 'Benjamin Sisko', age: 37 });
+    typeof age; // 'bigint'
+
+    // By default, if you store a document with a BigInt property in MongoDB and you
+    // load the document with `lean()`, the BigInt property will be a number
+    let person = await Person.findOne({ name: 'Benjamin Sisko' }).lean();
+    typeof person.age; // 'number'
+    // acquit:ignore:start
+    assert.equal(typeof person.age, 'number');
+    assert.equal(person.age, 37);
+    // acquit:ignore:end
+
+    // Set the `useBigInt64` option to opt in to converting MongoDB longs to BigInts.
+    person = await Person.findOne({ name: 'Benjamin Sisko' }).
+      setOptions({ useBigInt64: true }).
+      lean();
+    typeof person.age; // 'bigint'
+    // acquit:ignore:start
+    assert.equal(typeof person.age, 'bigint');
     // acquit:ignore:end
   });
 });

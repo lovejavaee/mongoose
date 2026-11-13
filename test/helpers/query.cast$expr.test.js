@@ -108,4 +108,73 @@ describe('castexpr', function() {
     const res = cast$expr({ $not: { $in: ['42', '$nums'] } }, testSchema);
     assert.deepStrictEqual(res, { $not: { $in: [42, '$nums'] } });
   });
+
+  it('casts $round (gh-13881)', function() {
+    const testSchema = new Schema({ value: Number });
+
+    let res = cast$expr({ $eq: [{ $round: ['$value', '00'] }, 2] }, testSchema);
+    assert.deepStrictEqual(res, { $eq: [{ $round: ['$value', 0] }, 2] });
+
+    res = cast$expr({ $eq: [{ $round: ['$value'] }, 2] }, testSchema);
+    assert.deepStrictEqual(res, { $eq: [{ $round: ['$value'] }, 2] });
+  });
+
+  it('casts nested expressions on the right-hand side of a comparison', function() {
+    const testSchema = new Schema({ isActive: Boolean, count: Number, nums: [Number] });
+
+    let res = cast$expr({ $eq: ['$isActive', { $gt: ['$count', '5'] }] }, testSchema);
+    assert.deepStrictEqual(res, { $eq: ['$isActive', { $gt: ['$count', 5] }] });
+
+    res = cast$expr({ $eq: ['$isActive', { $in: ['42', '$nums'] }] }, testSchema);
+    assert.deepStrictEqual(res, { $eq: ['$isActive', { $in: [42, '$nums'] }] });
+  });
+
+  it('casts $switch (gh-14751)', function() {
+    const testSchema = new Schema({
+      name: String,
+      scores: [Number]
+    });
+    const res = cast$expr({
+      $eq: [
+        {
+          $switch: {
+            branches: [{ case: { $eq: ['$$NOW', '$$NOW'] }, then: true }],
+            default: false
+          }
+        },
+        true
+      ]
+    }, testSchema);
+    assert.deepStrictEqual(res, {
+      $eq: [
+        {
+          $switch: {
+            branches: [{ case: { $eq: ['$$NOW', '$$NOW'] }, then: true }],
+            default: false
+          }
+        },
+        true
+      ]
+    });
+  });
+
+  it('casts case and then expressions in $switch branches', function() {
+    const testSchema = new Schema({ age: Number, score: Number });
+
+    const res = cast$expr({
+      $switch: {
+        branches: [{ case: { $gte: ['$age', '18'] }, then: { $multiply: ['$score', '2'] } }],
+        default: '$score'
+      }
+    }, testSchema);
+    assert.deepStrictEqual(res, {
+      $switch: {
+        branches: [{ case: { $gte: ['$age', 18] }, then: { $multiply: ['$score', 2] } }],
+        default: '$score'
+      }
+    });
+
+    const res2 = cast$expr({ $switch: { branches: [{ case: { $gte: ['$age', '18'] }, then: undefined }] } }, testSchema);
+    assert.deepStrictEqual(res2, { $switch: { branches: [{ case: { $gte: ['$age', 18] } }] } });
+  });
 });

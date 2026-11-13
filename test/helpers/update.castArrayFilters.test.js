@@ -311,4 +311,225 @@ describe('castArrayFilters', function() {
 
     assert.strictEqual(q.options.arrayFilters[0]['element.number'], 1);
   });
+
+  it('correctly casts array of strings underneath doc array (gh-12565)', function() {
+    const userSchema = new Schema({
+      groups: [{
+        document: 'ObjectId',
+        tags: [String]
+      }]
+    });
+
+    const q = new Query();
+    q.schema = userSchema;
+
+    const groupId = new Types.ObjectId();
+    const filter = {
+      groups: {
+        $elemMatch: {
+          document: groupId,
+          tags: 'tag-to-update'
+        }
+      }
+    };
+    const update = {
+      $set: {
+        'groups.$[group].tags.$[tag]': 42
+      }
+    };
+    const opts = {
+      arrayFilters: [
+        { 'group.document': groupId },
+        { tag: { $eq: 'tag-to-update' } }
+      ]
+    };
+    q.updateOne(filter, update, opts);
+    castArrayFilters(q);
+    q._update = q._castUpdate(q._update, false);
+
+    assert.strictEqual(q.getUpdate().$set['groups.$[group].tags.$[tag]'], '42');
+  });
+
+  it('casts paths underneath embedded discriminators (gh-15386)', async function() {
+    const eventSchema = new Schema({ message: String }, { discriminatorKey: 'kind', _id: false });
+    const batchSchema = new Schema({ events: [eventSchema] });
+
+    const docArray = batchSchema.path('events');
+    docArray.discriminator('Clicked', new Schema({ element: { type: String, required: true } }, { _id: false }));
+
+    const productSchema = new Schema({
+      name: String,
+      price: Number
+    });
+
+    docArray.discriminator(
+      'Purchased',
+      new Schema({
+        products: {
+          type: [productSchema],
+          required: true
+        }
+      })
+    );
+
+    const q = new Query();
+    q.schema = batchSchema;
+
+    const filter = {};
+    const update = {
+      $set: {
+        'events.$[event].products.$[product].price': '20'
+      }
+    };
+    const purchasedId = new Types.ObjectId();
+    const productId = new Types.ObjectId();
+    const opts = {
+      arrayFilters: [
+        { 'event._id': purchasedId, 'event.kind': 'Purchased' },
+        { 'product._id': productId.toString() }
+      ]
+    };
+
+    q.updateOne(filter, update, opts);
+    castArrayFilters(q);
+    q._update = q._castUpdate(q._update, false);
+
+    assert.strictEqual(q.getOptions().arrayFilters[1]['product._id'].toHexString(), productId.toHexString());
+    assert.strictEqual(q.getUpdate().$set['events.$[event].products.$[product].price'], 20);
+  });
+
+  it('does not cast array filters that point into mixed array paths (gh-15653)', function() {
+    const schema = new Schema({
+      anything: [Schema.Types.Mixed]
+    });
+    const q = new Query();
+    q.schema = schema;
+
+    const update = { $set: { 'anything.$[item].any.foo': 'bar' } };
+    const opts = {
+      arrayFilters: [
+        { 'item.any.foo': 123 }
+      ]
+    };
+
+    q.updateOne({}, update, opts);
+
+    castArrayFilters(q);
+
+    // value is left as is, not cast to string
+    assert.strictEqual(q.options.arrayFilters[0]['item.any.foo'], 123);
+  });
+
+  it('respects `strictQuery` passed as a query option (gh-16447)', function() {
+    const itemSchema = new Schema({ name: String }, { _id: false });
+    const schema = new Schema({ items: [itemSchema] });
+
+    const update = { $set: { 'items.$[item].name': 'test' } };
+
+    // `items._id` is not in the schema because `itemSchema` sets `_id: false`,
+    // so the array filter throws by default.
+    const q = new Query();
+    q.schema = schema;
+    q.updateOne({}, update, { arrayFilters: [{ 'item._id': 42 }] });
+    assert.throws(function() {
+      castArrayFilters(q);
+    }, /Could not find path "items\.0\._id" in schema/);
+
+    // `strictQuery: false` as a query option leaves the path as-is, the same way
+    // `strict: false` does.
+    const q2 = new Query();
+    q2.schema = schema;
+    q2.updateOne({}, update, { arrayFilters: [{ 'item._id': 42 }], strictQuery: false });
+    castArrayFilters(q2);
+    assert.strictEqual(q2.options.arrayFilters[0]['item._id'], 42);
+
+    // Same via `setOptions()`.
+    const q3 = new Query();
+    q3.schema = schema;
+    q3.updateOne({}, update, { arrayFilters: [{ 'item._id': 42 }] });
+    q3.setOptions({ strictQuery: false });
+    castArrayFilters(q3);
+    assert.strictEqual(q3.options.arrayFilters[0]['item._id'], 42);
+  });
+
+  it('casts the remaining array filters after a path that is not in the schema with `strictQuery: false`', function() {
+    const schema = new Schema({
+      arr: [{ id: Number, date: Date }]
+    }, { strictQuery: false });
+    const q = new Query();
+    q.schema = schema;
+
+    const update = { $set: { 'arr.$[x].id': 1, 'arr.$[y].id': 2, 'arr.$[z].id': 3 } };
+    q.updateOne({}, update, {
+      arrayFilters: [
+        { 'x.notInSchema': '1', 'x.id': '1' },
+        { 'y.date': { $gte: '2018-01-01' } },
+        { $or: [{ 'z.notInSchema': '3' }, { 'z.id': '3' }] }
+      ]
+    });
+    castArrayFilters(q);
+
+    const arrayFilters = q.options.arrayFilters;
+    assert.strictEqual(arrayFilters[0]['x.notInSchema'], '1');
+    assert.strictEqual(arrayFilters[0]['x.id'], 1);
+    assert.ok(arrayFilters[1]['y.date'].$gte instanceof Date);
+    assert.strictEqual(arrayFilters[2].$or[0]['z.notInSchema'], '3');
+    assert.strictEqual(arrayFilters[2].$or[1]['z.id'], 3);
+  });
+
+  it('casts `$or` and `$and` that come after a field key in the same filter (gh-16637)', function() {
+    const schema = new Schema({
+      arr: [{ id: Number, deleted: Boolean }]
+    });
+    const q = new Query();
+    q.schema = schema;
+
+    q.updateOne({}, { $set: { 'arr.$[el].id': 1 } }, {
+      arrayFilters: [
+        { 'el.deleted': 'false', $or: [{ 'el.id': '12' }, { 'el.id': { $exists: false } }] },
+        { 'el.deleted': 'true', $and: [{ 'el.id': { $gte: '3' } }] }
+      ]
+    });
+    castArrayFilters(q);
+
+    const arrayFilters = q.options.arrayFilters;
+    assert.deepStrictEqual(arrayFilters[0], {
+      'el.deleted': false,
+      $or: [{ 'el.id': 12 }, { 'el.id': { $exists: false } }]
+    });
+    assert.deepStrictEqual(arrayFilters[1], {
+      'el.deleted': true,
+      $and: [{ 'el.id': { $gte: 3 } }]
+    });
+  });
+
+  it('casts field keys that come after a leading `$or` (gh-16637)', function() {
+    const schema = new Schema({
+      arr: [{ id: Number, deleted: Boolean }]
+    });
+    const q = new Query();
+    q.schema = schema;
+
+    q.updateOne({}, { $set: { 'arr.$[el].id': 1 } }, {
+      arrayFilters: [{ $or: [{ 'el.id': '12' }], 'el.deleted': 'true' }]
+    });
+    castArrayFilters(q);
+
+    assert.deepStrictEqual(q.options.arrayFilters[0], { $or: [{ 'el.id': 12 }], 'el.deleted': true });
+  });
+
+  it('casts `$nor` (gh-16637)', function() {
+    const schema = new Schema({
+      arr: [{ id: Number }]
+    });
+    const q = new Query();
+    q.schema = schema;
+
+    q.updateOne({}, { $set: { 'arr.$[el].id': 1 } }, {
+      arrayFilters: [{ $nor: [{ 'el.id': '12' }] }]
+    });
+    castArrayFilters(q);
+
+    assert.strictEqual(q.options.arrayFilters[0].$nor[0]['el.id'], 12);
+  });
 });

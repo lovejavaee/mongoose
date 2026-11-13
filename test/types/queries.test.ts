@@ -1,4 +1,4 @@
-import {
+import mongoose, {
   HydratedDocument,
   Schema,
   model,
@@ -8,25 +8,25 @@ import {
   Model,
   QueryWithHelpers,
   PopulatedDoc,
-  FilterQuery,
   UpdateQuery,
-  ApplyBasicQueryCasting,
-  QuerySelector,
+  UpdateQueryKnownOnly,
+  InferRawDocType,
   InferSchemaType,
   ProjectionFields,
-  QueryOptions
+  QueryOptions,
+  ProjectionType,
+  QueryFilter
 } from 'mongoose';
-import { ObjectId } from 'mongodb';
-import { expectError, expectType } from 'tsd';
+import { Condition, ModifyResult, ObjectId } from 'mongodb';
 import { autoTypedModel } from './models.test';
-import { AutoTypedSchemaType } from './schema.test';
+import { expect } from 'tstyche';
 
 interface QueryHelpers {
   _byName(this: QueryWithHelpers<any, ITest, QueryHelpers>, name: string): QueryWithHelpers<Array<ITest>, ITest, QueryHelpers>;
   byName(this: QueryWithHelpers<any, ITest, QueryHelpers>, name: string): QueryWithHelpers<Array<ITest>, ITest, QueryHelpers>;
 }
 
-const childSchema: Schema = new Schema({ name: String });
+const childSchema = new Schema({ name: String });
 const ChildModel = model<Child>('Child', childSchema);
 
 const schema: Schema<ITest, Model<ITest, QueryHelpers>, {}, QueryHelpers> = new Schema({
@@ -37,12 +37,12 @@ const schema: Schema<ITest, Model<ITest, QueryHelpers>, {}, QueryHelpers> = new 
   endDate: Date
 });
 
-schema.query._byName = function(name: string): QueryWithHelpers<any, ITest, QueryHelpers> {
+schema.query._byName = function(name: string): QueryWithHelpers<ITest[], ITest, QueryHelpers> {
   return this.find({ name });
 };
 
-schema.query.byName = function(name: string): QueryWithHelpers<any, ITest, QueryHelpers> {
-  expectError(this.notAQueryHelper());
+schema.query.byName = function(name: string): QueryWithHelpers<ITest[], ITest, QueryHelpers> {
+  expect(this).type.not.toHaveProperty('notAQueryHelper');
   return this._byName(name);
 };
 
@@ -53,9 +53,13 @@ interface ISubdoc {
   myId?: Types.ObjectId;
   id?: number;
   tags?: string[];
+  profiles: {
+    name?: string
+  }
 }
 
 interface ITest {
+  _id: Types.ObjectId;
   name?: string;
   age?: number;
   parent?: Types.ObjectId;
@@ -65,14 +69,244 @@ interface ITest {
   endDate?: Date;
 }
 
+expect<mongoose.WithLevel1NestedPaths<ITest>['docs.id']>().type.toBe<number | undefined>();
+
 const Test = model<ITest, Model<ITest, QueryHelpers>>('Test', schema);
+
+const schemaWithQueryHelper = new Schema({ name: String }).queryHelper('byName', function(name: string) {
+  return this.where({ name });
+});
+const ModelWithQueryHelper = model('ModelWithQueryHelper', schemaWithQueryHelper);
+ModelWithQueryHelper.find().byName('test').exec();
 
 Test.find({}, {}, { populate: { path: 'child', model: ChildModel, match: true } }).exec().then((res: Array<ITest>) => console.log(res));
 
+Test.find({}, { name: 1 }).then(docs => {
+  expect(docs[0]).type.toHaveProperty('name');
+  expect(docs[0]).type.not.toHaveProperty('age');
+  expect(docs[0]).type.toHaveProperty('_id');
+});
+Test.findOne({}, { name: 1 }).then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.not.toHaveProperty('age');
+  expect(doc!).type.toHaveProperty('_id');
+});
+Test.find({}, undefined, { projection: { name: 1 } }).then(docs => {
+  expect(docs[0]).type.toHaveProperty('name');
+  expect(docs[0]).type.not.toHaveProperty('age');
+  expect(docs[0]).type.toHaveProperty('_id');
+});
+Test.findOne({}, undefined, { projection: { name: 1 } }).then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.not.toHaveProperty('age');
+  expect(doc!).type.toHaveProperty('_id');
+});
+Test.find({}, { name: 1 }, { lean: true }).then(docs => {
+  expect(docs[0]).type.toHaveProperty('name');
+  expect(docs[0]).type.not.toHaveProperty('age');
+  expect(docs[0]).type.toHaveProperty('_id');
+});
+Test.find({}, undefined, { projection: { age: 0, _id: 1 }, lean: true }).then(docs => {
+  expect(docs[0]).type.toHaveProperty('name');
+  expect(docs[0]).type.not.toHaveProperty('age');
+  expect(docs[0]).type.toHaveProperty('_id');
+});
+Test.findOne({}, { name: 1 }, { lean: true }).then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.not.toHaveProperty('age');
+  expect(doc!).type.toHaveProperty('_id');
+});
+Test.findOne({}, undefined, { projection: { age: 0, _id: 1 }, lean: true }).then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.not.toHaveProperty('age');
+  expect(doc!).type.toHaveProperty('_id');
+});
+Test.findById(new Types.ObjectId(), { name: 1 }, { lean: true }).then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.not.toHaveProperty('age');
+  expect(doc!).type.toHaveProperty('_id');
+});
+Test.findAndCount({}, { name: 1 }, { sort: { name: 1 }, limit: 1, lean: true }).then(([docs]) => {
+  expect(docs[0]).type.toHaveProperty('name');
+  expect(docs[0]).type.not.toHaveProperty('age');
+  expect(docs[0]).type.toHaveProperty('_id');
+});
+Test.find({}, { name: 1 }).lean().then(docs => {
+  expect(docs[0]).type.toHaveProperty('name');
+  expect(docs[0]).type.not.toHaveProperty('age');
+  expect(docs[0]).type.toHaveProperty('_id');
+});
+Test.findOne({}, { name: 1 }).lean().then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.not.toHaveProperty('age');
+  expect(doc!).type.toHaveProperty('_id');
+});
+Test.findOne({}, undefined, { projection: { name: 1 } }).lean().then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.not.toHaveProperty('age');
+  expect(doc!).type.toHaveProperty('_id');
+});
+Test.findOne({}, { age: 0 }).lean().then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.not.toHaveProperty('age');
+  expect(doc!).type.toHaveProperty('_id');
+});
+Test.findOneAndUpdate({}, {}, { projection: { name: 1 } }).lean().then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.not.toHaveProperty('age');
+  expect(doc!).type.toHaveProperty('_id');
+});
+Test.findOneAndDelete({}, { projection: { name: 1 } }).lean().then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.not.toHaveProperty('age');
+  expect(doc!).type.toHaveProperty('_id');
+});
+Test.findOne({}, { name: 1, _id: 0 }).then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.not.toHaveProperty('age');
+  expect(doc!).type.not.toHaveProperty('_id');
+});
+Test.findOne({}, { _id: 0 }).then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.toHaveProperty('age');
+  expect(doc!).type.not.toHaveProperty('_id');
+});
+Test.findOne({}, { _id: 0 }).lean().then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.toHaveProperty('age');
+  expect(doc!).type.not.toHaveProperty('_id');
+});
+Test.findOne({}, { _id: 1 }).then(doc => {
+  expect(doc!).type.not.toHaveProperty('name');
+  expect(doc!).type.not.toHaveProperty('age');
+  expect(doc!).type.toHaveProperty('_id');
+});
+Test.findOne({}, { age: 0, _id: 1 }).then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.not.toHaveProperty('age');
+  expect(doc!).type.toHaveProperty('_id');
+});
+Test.findOne({}, { _id: true, age: false }).then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.not.toHaveProperty('age');
+  expect(doc!).type.toHaveProperty('_id');
+});
+Test.findOne({}, { _id: true }).then(doc => {
+  expect(doc!).type.not.toHaveProperty('name');
+  expect(doc!).type.not.toHaveProperty('age');
+  expect(doc!).type.toHaveProperty('_id');
+});
+
+type ProjectionDoc = { _id: string; name: string; age: number };
+expect<mongoose.ApplyProjection<ProjectionDoc, { _id: 1; age: 0 }>>().type.toBe<{ _id: string; name: string }>();
+expect<mongoose.ApplyProjection<ProjectionDoc, { _id: 0; age: 0 }>>().type.toBe<{ name: string }>();
+expect<mongoose.ApplyProjection<ProjectionDoc, { _id: false }>>().type.toBe<{ name: string; age: number }>();
+
+Test.findOneAndUpdate({}, {}, { projection: { name: 1 } }).then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.not.toHaveProperty('age');
+  expect(doc!).type.toHaveProperty('_id');
+});
+Test.findOneAndDelete({}, { projection: { name: 1 } }).then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.not.toHaveProperty('age');
+  expect(doc!).type.toHaveProperty('_id');
+});
+Test.findOneAndReplace({}, {}, { projection: { name: 1 } }).then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.not.toHaveProperty('age');
+  expect(doc!).type.toHaveProperty('_id');
+});
+Test.findOneAndReplace({}, {}, { projection: { age: 0, _id: 1 }, includeResultMetadata: true }).then(res => {
+  expect(res.value!).type.toHaveProperty('name');
+  expect(res.value!).type.not.toHaveProperty('age');
+  expect(res.value!).type.toHaveProperty('_id');
+});
+Test.findOneAndUpdate({}, {}, { projection: { age: 0, _id: 1 }, lean: true }).then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.not.toHaveProperty('age');
+  expect(doc!).type.toHaveProperty('_id');
+});
+Test.findOneAndDelete({}, { projection: { age: 0, _id: 1 }, lean: true }).then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.not.toHaveProperty('age');
+  expect(doc!).type.toHaveProperty('_id');
+});
+Test.findOneAndReplace({}, {}, { projection: { age: 0, _id: 1 }, lean: true }).then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.not.toHaveProperty('age');
+  expect(doc!).type.toHaveProperty('_id');
+});
+Test.findOneAndUpdate({}, {}, { projection: { name: 1 }, lean: true, includeResultMetadata: true }).then(res => {
+  expect(res.value!).type.toHaveProperty('name');
+  expect(res.value!).type.not.toHaveProperty('age');
+  expect(res.value!).type.toHaveProperty('_id');
+});
+Test.findOneAndDelete({}, { projection: { name: 1 }, lean: true, includeResultMetadata: true }).then(res => {
+  expect(res.value!).type.toHaveProperty('name');
+  expect(res.value!).type.not.toHaveProperty('age');
+  expect(res.value!).type.toHaveProperty('_id');
+});
+Test.findOneAndReplace({}, {}, { projection: { name: 1 }, lean: true, includeResultMetadata: true }).then(res => {
+  expect(res.value!).type.toHaveProperty('name');
+  expect(res.value!).type.not.toHaveProperty('age');
+  expect(res.value!).type.toHaveProperty('_id');
+});
+Test.findByIdAndUpdate(new Types.ObjectId(), {}, { projection: { name: 1 }, lean: true }).then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.not.toHaveProperty('age');
+  expect(doc!).type.toHaveProperty('_id');
+});
+Test.findByIdAndUpdate(new Types.ObjectId(), {}, { projection: { name: 1 }, lean: true, includeResultMetadata: true }).then(res => {
+  expect(res.value!).type.toHaveProperty('name');
+  expect(res.value!).type.not.toHaveProperty('age');
+  expect(res.value!).type.toHaveProperty('_id');
+});
+Test.findByIdAndDelete(new Types.ObjectId(), { projection: { name: 1 }, lean: true }).then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.not.toHaveProperty('age');
+  expect(doc!).type.toHaveProperty('_id');
+});
+Test.findByIdAndDelete(new Types.ObjectId(), { projection: { name: 1 }, lean: true, includeResultMetadata: true }).then(res => {
+  expect(res.value!).type.toHaveProperty('name');
+  expect(res.value!).type.not.toHaveProperty('age');
+  expect(res.value!).type.toHaveProperty('_id');
+});
+
+Test.find({}, { 'docs.$': 1 }).then(docs => {
+  expect(docs[0]).type.not.toHaveProperty('name');
+  expect(docs[0]).type.toHaveProperty('docs');
+  expect(docs[0]).type.toHaveProperty('_id');
+});
+Test.findOne({}, { docs: { $elemMatch: { id: 1 } } }).then(doc => {
+  expect(doc!).type.not.toHaveProperty('name');
+  expect(doc!).type.toHaveProperty('docs');
+  expect(doc!).type.toHaveProperty('_id');
+});
+Test.findOneAndUpdate({}, {}, { projection: { tags: { $slice: 1 } } }).then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.toHaveProperty('docs');
+  expect(doc!).type.toHaveProperty('_id');
+});
+Test.findOneAndDelete({}, { projection: { name: { $meta: 'textScore' } } }).then(doc => {
+  expect(doc!).type.toHaveProperty('name');
+  expect(doc!).type.toHaveProperty('docs');
+  expect(doc!).type.toHaveProperty('_id');
+});
+
 Test.find().byName('test').byName('test2').orFail().exec().then(console.log);
 
-Test.count({ name: /Test/ }).exec().then((res: number) => console.log(res));
+Test.countDocuments({ name: /Test/ }).exec().then((res: number) => console.log(res));
 Test.findOne({ 'docs.id': 42 }).exec().then(console.log);
+
+Test.findAndCount({ name: /Test/ }, null, { sort: { name: 1 }, limit: 10 }).then(([docs, count]) => {
+  expect(docs[0].name).type.toBe<string | undefined>();
+  expect<typeof count>().type.toBe<number>();
+});
+Test.findAndCount({ name: /Test/ }, null, { sort: { name: 1 }, limit: 10, lean: true }).then(([docs, count]) => {
+  expect(docs[0].name).type.toBe<string | undefined>();
+  expect<typeof count>().type.toBe<number>();
+});
 
 // ObjectId casting
 Test.find({ parent: new Types.ObjectId('0'.repeat(24)) });
@@ -83,19 +317,14 @@ Test.find({ parent: { $in: ['0'.repeat(24)] } });
 Test.find({ name: { $in: ['Test'] } }).exec().then((res: Array<ITest>) => console.log(res));
 Test.find({ tags: 'test' }).exec();
 Test.find({ tags: { $in: ['test'] } }).exec();
+Test.find({ tags: /test/ }).exec();
+Test.find({ tags: { $in: [/test/] } }).exec();
 
 // Implicit `$in`
 Test.find({ name: ['Test1', 'Test2'] }).exec();
 
-Test.find({ name: 'test' }, (err: Error | null, docs: ITest[]) => {
-  console.log(!!err, docs[0].age);
-});
-
-Test.findOne({ name: 'test' }, (err: Error | null, doc: ITest | null) => {
-  if (doc != null) {
-    console.log(!!err, doc.age);
-  }
-});
+// Implicit `$in` for regex string
+Test.find({ name: [/Test1/, /Test2/] });
 
 Test.find({ name: { $gte: 'Test' } }, null, { collation: { locale: 'en-us' } }).exec().
   then((res: Array<ITest>) => console.log(res[0].name));
@@ -103,6 +332,7 @@ Test.find({ name: { $gte: 'Test' } }, null, { collation: { locale: 'en-us' } }).
 Test.findOne().orFail(new Error('bar')).then((doc: ITest | null) => console.log('Found! ' + doc));
 
 Test.distinct('name').exec().then((res: Array<any>) => console.log(res[0]));
+Test.distinct('name', {}, { collation: { locale: 'en', strength: 2 } }).exec().then((res: Array<any>) => console.log(res[0]));
 
 Test.findOneAndUpdate({ name: 'test' }, { name: 'test2' }).exec().then((res: ITest | null) => console.log(res));
 Test.findOneAndUpdate({ name: 'test' }, { name: 'test2' }).then((res: ITest | null) => console.log(res));
@@ -114,12 +344,13 @@ Test.findOneAndUpdate({ name: 'test' }, { name: 'test3' }, { upsert: true, new: 
 Test.findOneAndUpdate({ name: 'test' }, { name: 'test3' }, { upsert: true, returnOriginal: false }).then((res: ITest) => {
   res.name = 'test4';
 });
-Test.findOneAndUpdate({ name: 'test' }, { name: 'test3' }, { rawResult: true }).then((res: any) => {
+Test.findOneAndUpdate({ name: 'test' }, { name: 'test3' }, { includeResultMetadata: true }).then((res: any) => {
   console.log(res.ok);
 });
-Test.findOneAndUpdate({ name: 'test' }, { name: 'test3' }, { new: true, upsert: true, rawResult: true }).then((res: any) => {
+Test.findOneAndUpdate({ name: 'test' }, { name: 'test3' }, { new: true, upsert: true, includeResultMetadata: true }).then((res: any) => {
   console.log(res.ok);
 });
+Test.findOneAndUpdate({ name: 'test' }, { name: 'test3' }, { cloneUpdate: false });
 
 Test.findOneAndReplace({ name: 'test' }, { _id: new Types.ObjectId(), name: 'test2' }).exec().then((res: ITest | null) => console.log(res));
 
@@ -134,8 +365,9 @@ Test.findOneAndUpdate({ name: 'test' }, update);
 
 Test.findOneAndUpdate({ name: 'test' }, { $currentDate: { endDate: true } });
 Test.findOneAndUpdate({ name: 'test' }, [{ $set: { endDate: true } }]);
+Test.findOneAndUpdate().setUpdate({ $set: { name: 'test' } }, false);
 
-Test.findByIdAndUpdate({ name: 'test' }, { name: 'test2' }, (err: any, doc) => console.log(doc));
+Test.findByIdAndUpdate({ name: 'test' }, { name: 'test2' }, (err: any, doc: any) => console.log(doc));
 
 Test.findOneAndUpdate({ name: 'test' }, { 'docs.0.myId': '0'.repeat(24) });
 
@@ -153,6 +385,49 @@ const p1: Record<string, number> = Test.find().projection('age docs.id');
 const p2: Record<string, number> | null = Test.find().projection();
 const p3: null = Test.find().projection(null);
 
+expect(Test.find).type.not.toBeCallableWith({}, { name: 'ss' }); // Only 0 and 1 are allowed
+Test.find({}, { name: 3 });
+Test.find({}, { name: true, age: false, endDate: true, tags: 1 });
+Test.find({}, { name: true, age: false, endDate: true });
+Test.find({}, { name: false, age: false, tags: false, child: { name: false }, docs: { myId: false, id: true } });
+expect(Test.find).type.not.toBeCallableWith({}, { tags: { something: 1 } }); // Array of strings or numbers should only be allowed to be a boolean or 1 and 0
+Test.find({}, { name: true, age: true, endDate: true, tags: 1, child: { name: true }, docs: { myId: true, id: true } }); // This should be allowed
+Test.find({}, { name: 1, age: 1, endDate: 1, tags: 1, child: { name: 1 }, docs: { myId: 1, id: 1 } }); // This should be allowed
+Test.find({}, { _id: 0, name: 1, age: 1, endDate: 1, tags: 1, child: 1, docs: 1 }); // _id is an exception and should be allowed to be excluded
+Test.find({}, { name: 0, age: 0, endDate: 0, tags: 0, child: 0, docs: 0 }); // This should be allowed
+Test.find({}, { name: 0, age: 0, endDate: 0, tags: 0, child: { name: 0 }, docs: { myId: 0, id: 0 } }); // This should be allowed
+Test.find({}, { name: 1, age: 1, _id: 0 }); // This should be allowed since _id is an exception
+Test.find({}, { someOtherField: 1 }); // This should be allowed since it's not a field in the schema
+expect(Test.find).type.not.toBeCallableWith({}, { name: { $slice: 1 } }); // $slice should only be allowed on arrays
+Test.find({}, { tags: { $slice: 1 } }); // $slice should be allowed on arrays
+Test.find({}, { tags: { $slice: [1, 2] } }); // $slice with the format of [ <number to skip>, <number to return> ] should also be allowed on arrays
+expect(Test.find).type.not.toBeCallableWith({}, { age: { $elemMatch: {} } }); // $elemMatch should not be allowed on non arrays
+Test.find({}, { docs: { $elemMatch: { id: 'aa' } } }); // $elemMatch should be allowed on arrays
+expect(Test.find).type.not.toBeCallableWith({}, { tags: { $slice: 1, $elemMatch: {} } }); // $elemMatch and $slice should not be allowed together
+Test.find({}, { age: 1, tags: { $slice: 5 } }); // $slice should be allowed in inclusion projection
+Test.find({}, { age: 0, tags: { $slice: 5 } }); // $slice should be allowed in exclusion projection
+Test.find({}, { age: 1, tags: { $elemMatch: {} } }); // $elemMatch should be allowed in inclusion projection
+Test.find({}, { age: 0, tags: { $elemMatch: {} } }); // $elemMatch should be allowed in exclusion projection
+Test.find({}, { 'docs.$': 1 }); // Positional $ projection should be allowed
+Test.find({}, { docs: { $elemMatch: { id: 1 } } }); // $elemMatch projection should be allowed
+Test.find({}, { tags: { $slice: [0, 1] } }); // $slice projection should be allowed
+Test.find({}, { name: { $meta: 'textScore' } }); // $meta projection should be allowed
+expect(Test.find).type.not.toBeCallableWith({}, { 'docs.id': 'taco' }); // Dot notation should be allowed and does not accept any
+expect(Test.find).type.not.toBeCallableWith({}, { docs: { id: '1' } }); // Dot notation should be able to use a combination with objects
+Test.find({}, { docs: { id: false } }); // Dot notation should be allowed with valid values - should correctly handle arrays
+Test.find({}, { docs: { id: true } }); // Dot notation should be allowed with valid values - should correctly handle arrays
+Test.find({ docs: { $elemMatch: { id: 1 } } }, { 'docs.$': 1 }); // $ projection should be allowed
+Test.find({}, { child: 1 }); // Dot notation should be able to use a combination with objects
+// Test.find({}, { 'docs.profiles': { name: 1 } }); // 3 levels deep not supported
+expect(Test.find).type.not.toBeCallableWith({}, { 'docs.profiles': { name: 'aa' } }); // should support a combination of dot notation and objects
+expect(Test.find).type.not.toBeCallableWith({}, { endDate: { toString: 1 } }); // should not allow projecting inherited methods in nested objects
+expect(Test.find).type.not.toBeCallableWith({}, { tags: { trim: 1 } }); // should not allow projecting inherited methods in nested objects
+expect(Test.find).type.not.toBeCallableWith({}, { child: { toJSON: 1 } }); // should not allow projecting inherited methods in nested objects
+Test.find({}, { age: 1, _id: 0 });
+Test.find({}, { name: 0, age: 0, _id: 1 });
+
+// Manual Casting using ProjectionType
+Test.find({}, { docs: { unknownParams: 1 } } as ProjectionType<ITest>);
 // Sorting
 Test.find().sort();
 Test.find().sort('-name');
@@ -162,30 +437,30 @@ Test.find().sort(undefined);
 Test.find().sort(null);
 Test.find().sort([['key', 'ascending']]);
 Test.find().sort([['key1', 'ascending'], ['key2', 'descending']]);
-expectError(Test.find().sort({ name: 2 }));
-expectError(Test.find().sort({ name: 'invalidSortOrder' }));
-expectError(Test.find().sort([['key', 'invalid']]));
-expectError(Test.find().sort([['key', false]]));
-expectError(Test.find().sort(['invalid']));
+expect(Test.find().sort).type.not.toBeCallableWith({ name: 2 });
+expect(Test.find().sort).type.not.toBeCallableWith({ name: 'invalidSortOrder' });
+expect(Test.find().sort).type.not.toBeCallableWith([['key', 'invalid']]);
+expect(Test.find().sort).type.not.toBeCallableWith([['key', false]]);
+expect(Test.find().sort).type.not.toBeCallableWith(['invalid']);
 
 // Super generic query
 function testGenericQuery(): void {
-  interface CommonInterface<T> extends Document {
+  interface CommonInterface<T> {
     something: string;
     content: T;
   }
 
   async function findSomething<T>(model: Model<CommonInterface<T>>): Promise<CommonInterface<T>> {
-    return model.findOne({ something: 'test' }).orFail().exec();
+    return model.findOne({ something: 'test' } as mongoose.QueryFilter<CommonInterface<T>>).orFail().exec();
   }
 }
 
 function eachAsync(): void {
   Test.find().cursor().eachAsync((doc) => {
-    expectType<HydratedDocument<ITest, {}, QueryHelpers>>(doc);
+    expect(doc).type.toBe<HydratedDocument<ITest, {}, QueryHelpers>>();
   });
   Test.find().cursor().eachAsync((docs) => {
-    expectType<HydratedDocument<ITest, {}, QueryHelpers>[]>(docs);
+    expect(docs).type.toBe<HydratedDocument<ITest, {}, QueryHelpers>[]>();
   }, { batchSize: 2 });
 }
 
@@ -217,7 +492,7 @@ function gh10757() {
 
   type MyClassDocument = MyClass & Document;
 
-  const test: FilterQuery<MyClass> = { status: { $in: [MyEnum.VALUE1, MyEnum.VALUE2] } };
+  const test: QueryFilter<MyClass> = { status: { $in: [MyEnum.VALUE1, MyEnum.VALUE2] } };
 }
 
 function gh10857() {
@@ -226,7 +501,37 @@ function gh10857() {
     status: MyUnion;
   }
   type MyClassDocument = MyClass & Document;
-  const test: FilterQuery<MyClass> = { status: { $in: ['VALUE1', 'VALUE2'] } };
+  const test: QueryFilter<MyClass> = { status: { $in: ['VALUE1', 'VALUE2'] } };
+  expect<QueryFilter<MyClass>>().type.not.toBeAssignableFrom({ status: 'nope' });
+}
+
+function gh16240() {
+  enum Status {
+    ACTIVE = 'active',
+    BANNED = 'banned'
+  }
+
+  interface MyClass {
+    statusUnion: 'active' | 'banned';
+    statusEnum: Status;
+    name: string;
+  }
+
+  expect<QueryFilter<MyClass>>().type.not.toBeAssignableFrom({
+    statusUnion: 'nope'
+  });
+  expect<QueryFilter<MyClass>>().type.not.toBeAssignableFrom({
+    statusEnum: 'nope'
+  });
+  expect<QueryFilter<MyClass>>().type.toBeAssignableFrom({
+    statusUnion: 'active'
+  } as const);
+  expect<QueryFilter<MyClass>>().type.toBeAssignableFrom({
+    statusEnum: Status.ACTIVE
+  });
+  expect<QueryFilter<MyClass>>().type.toBeAssignableFrom({
+    name: /valid/
+  } as const);
 }
 
 function gh10786() {
@@ -254,7 +559,8 @@ async function gh11156(): Promise<void> {
 
   const User: Model<IUser> = model<IUser>('User', schema);
 
-  expectType<{ name: string }>(await User.findOne<Pick<IUser, 'name'>>({}).orFail());
+  const doc = await User.findOne<Pick<IUser, 'name'>>({}).orFail();
+  expect(doc).type.toBe<{ name: string }>();
 }
 
 async function gh11041(): Promise<void> {
@@ -274,7 +580,7 @@ async function gh11041(): Promise<void> {
   // 3. Create a Model.
   const MyModel = model<User>('User', schema);
 
-  expectType<HydratedDocument<User> | null>(await MyModel.findOne({}).populate('someField').exec());
+  expect(await MyModel.findOne({}).populate('someField').exec()).type.toBe<HydratedDocument<User> | null>();
 }
 
 async function gh11306(): Promise<void> {
@@ -294,31 +600,40 @@ async function gh11306(): Promise<void> {
   // 3. Create a Model.
   const MyModel = model<User>('User', schema);
 
-  expectType<any[]>(await MyModel.distinct('name'));
-  expectType<string[]>(await MyModel.distinct<string>('name'));
+  expect(await MyModel.distinct('notThereInSchema')).type.toBe<unknown[]>();
+  expect(await MyModel.distinct('name')).type.toBe<string[]>();
 }
 
 function autoTypedQuery() {
   const AutoTypedModel = autoTypedModel();
   const query = AutoTypedModel.find();
-  expectType<typeof query>(AutoTypedModel.find().byUserName(''));
+  expect(AutoTypedModel.find().byUserName('')).type.toBe<typeof query>();
 }
 
 function gh11964() {
-  type Condition<T> = ApplyBasicQueryCasting<T> | QuerySelector<ApplyBasicQueryCasting<T>>; // redefined here because it's not exported by mongoose
-
-  type WithId<T extends object> = T & { id: string };
-
-  class Repository<T extends object> {
-    /* ... */
-
+  class Repository<T extends { id: string }> {
     find(id: string) {
-      const idCondition: Condition<WithId<T>>['id'] = id; // error :(
-      const filter: FilterQuery<WithId<T>> = { id }; // error :(
+      const idCondition: Condition<T['id']> = id as Condition<T['id']>;
 
-      /* ... */
+      // `as` is necessary because `T` can be `{ id: never }`,
+      // so we need to explicitly coerce
+      const filter: QueryFilter<T> = { id } as QueryFilter<T>;
     }
   }
+}
+
+function gh14397() {
+  type WithId<T extends object> = T & { id: string };
+
+  type TestUser = {
+    name: string;
+    age: number;
+  };
+
+  const id = 'Test Id';
+
+  expect<Condition<WithId<TestUser>['id']>>().type.toBeAssignableFrom(id);
+  expect<QueryFilter<WithId<TestUser>>>().type.toBeAssignableFrom({ id });
 }
 
 function gh12091() {
@@ -345,7 +660,8 @@ function gh12142() {
     { _id: new Types.ObjectId() },
     {
       $pull: { comments: new Types.ObjectId() }
-    }
+    },
+    { cloneUpdate: false }
   );
 }
 
@@ -384,14 +700,14 @@ async function gh12342_manual() {
   // 2nd param to `model()` is the Model class to return.
   const ProjectModel = model<Project, ProjectModelType>('Project', schema);
 
-  expectType<HydratedDocument<Project>[]>(
-    await ProjectModel.findOne().where('stars').gt(1000).byName('mongoose')
-  );
+  expect(await ProjectModel.findOne().where('stars').gt(1000).byName('mongoose')).type.toBe<HydratedDocument<Project>[]>();
+
 }
 
 async function gh12342_auto() {
   interface Project {
-    name?: string, stars?: number
+    name?: string | null,
+    stars?: number | null
   }
 
   const ProjectSchema = new Schema({
@@ -407,13 +723,11 @@ async function gh12342_auto() {
 
   const ProjectModel = model('Project', ProjectSchema);
 
-  expectType<HydratedDocument<Project>[]>(
-    await ProjectModel.findOne().where('stars').gt(1000).byName('mongoose')
-  );
+  expect(await ProjectModel.findOne().where('stars').gt(1000).byName('mongoose')).type.toBe<HydratedDocument<Project>[]>();
 }
 
 async function gh11602(): Promise<void> {
-  const query: Query<ITest | null, ITest> = Test.findOne();
+  const query = Test.findOne();
   query instanceof Query;
 
   const ModelType = model<ITest>('foo', schema);
@@ -421,20 +735,17 @@ async function gh11602(): Promise<void> {
   const updateResult = await ModelType.findOneAndUpdate(query, { $inc: { occurence: 1 } }, {
     upsert: true,
     returnDocument: 'after',
-    rawResult: true
+    includeResultMetadata: true
   });
 
-  expectError(updateResult.lastErrorObject?.modifiedCount);
-  expectType<boolean | undefined>(updateResult.lastErrorObject?.updatedExisting);
-  expectType<ObjectId | undefined>(updateResult.lastErrorObject?.upserted);
+  expect(updateResult.lastErrorObject!).type.not.toHaveProperty('modifiedCount');
+  expect(updateResult.lastErrorObject?.updatedExisting).type.toBe<boolean | undefined>();
+  expect(updateResult.lastErrorObject?.upserted).type.toBe<ObjectId | undefined>();
 
   ModelType.findOneAndUpdate({}, {}, { returnDocument: 'before' });
   ModelType.findOneAndUpdate({}, {}, { returnDocument: 'after' });
-  ModelType.findOneAndUpdate({}, {}, { returnDocument: undefined });
   ModelType.findOneAndUpdate({}, {}, {});
-  expectError(ModelType.findOneAndUpdate({}, {}, {
-    returnDocument: 'not-before-or-after'
-  }));
+  expect(ModelType.findOneAndUpdate).type.not.toBeCallableWith({}, {}, { returnDocument: 'not-before-or-after' }); // returnDocument should be 'before' or 'after'
 }
 
 async function gh13142() {
@@ -454,7 +765,7 @@ async function gh13142() {
       Projection extends ProjectionFields<Blog>,
       Options extends QueryOptions<Blog>
     >(
-      filter: FilterQuery<Blog>,
+      filter: QueryFilter<mongoose.WithLevel1NestedPaths<Blog>>,
       projection: Projection,
       options: Options
     ): Promise<
@@ -473,5 +784,355 @@ async function gh13142() {
     { lean: true }
   );
   if (!blog) return;
-  expectType<Pick<Blog, Extract<keyof { content: 1 }, keyof Blog>>>(blog);
+  expect(blog).type.toBe<Pick<Blog, Extract<keyof { content: 1 }, keyof Blog>>>();
+}
+
+async function gh13224() {
+  const userSchema = new Schema({ name: String, age: Number });
+  const UserModel = model('User', userSchema);
+
+  const u1 = await UserModel.findOne().select(['name']).orFail();
+  expect(u1.name).type.toBe<string | undefined | null>();
+  expect(u1.age).type.toBe<number | undefined | null>();
+  expect(u1.toObject).type.toBeAssignableTo<Function>();
+
+  const u2 = await UserModel.findOne().select<{ name?: string }>(['name']).orFail();
+  expect(u2.name).type.toBe<string | undefined>();
+  expect(u2).type.not.toHaveProperty('age');
+  expect(u2.toObject).type.toBeAssignableTo<Function>();
+
+  const users = await UserModel.find().select<{ name?: string }>(['name']);
+  const u3 = users[0];
+  expect(u3.name).type.toBe<string | undefined>();
+  expect(u3).type.not.toHaveProperty('age');
+  expect(u3.toObject).type.toBeAssignableTo<Function>();
+
+  expect(UserModel.findOne().select).type.not.toBeInstantiableWith<[{ notInSchema: string }]>();
+}
+
+function gh13630() {
+  interface User {
+    phone?: string;
+    name?: string;
+    nested?: {
+      test?: string;
+    }
+  }
+
+  expect<UpdateQueryKnownOnly<User>>().type.toBeAssignableFrom({ $set: { name: 'John' } });
+  expect<UpdateQueryKnownOnly<User>>().type.toBeAssignableFrom({ $unset: { phone: 'test' } });
+  expect<UpdateQueryKnownOnly<User>>().type.toBeAssignableFrom({ $set: { nested: { test: 'foo' } } });
+  expect<UpdateQueryKnownOnly<User>>().type.not.toBeAssignableFrom({ $set: { namee: 'foo' } });
+  expect<UpdateQueryKnownOnly<User>>().type.not.toBeAssignableFrom({ $set: { 'nested.test': 'foo' } });
+
+  expect<UpdateQueryKnownOnly<User>>().type.toBeAssignableTo<UpdateQuery<User>>();
+}
+
+async function gh14190() {
+  const userSchema = new Schema({ name: String, age: Number });
+  const UserModel = model('User', userSchema);
+
+  const doc = await UserModel.findByIdAndDelete('0'.repeat(24));
+  expect(doc).type.toBe<ReturnType<(typeof UserModel)['hydrate']> | null>();
+
+  const res = await UserModel.findByIdAndDelete(
+    '0'.repeat(24),
+    { includeResultMetadata: true }
+  );
+  expect(res).type.toBeAssignableTo<
+    ModifyResult<ReturnType<(typeof UserModel)['hydrate']>>
+  >();
+
+  const res2 = await UserModel.find().findByIdAndDelete(
+    '0'.repeat(24),
+    { includeResultMetadata: true }
+  );
+  expect(res2).type.toBeAssignableTo<
+    ModifyResult<ReturnType<(typeof UserModel)['hydrate']>>
+  >();
+}
+
+function mongooseQueryOptions() {
+  const userSchema = new Schema({ name: String, age: Number });
+  const UserModel = model('User', userSchema);
+
+  UserModel.updateOne(
+    { name: 'bar' },
+    { name: 'baz' },
+    {
+      context: 'query',
+      multipleCastError: true,
+      overwriteDiscriminatorKey: true,
+      runValidators: true,
+      sanitizeProjection: true,
+      sanitizeFilter: true,
+      setDefaultsOnInsert: true,
+      strict: true,
+      strictQuery: 'throw',
+      timestamps: false,
+      translateAliases: false
+    }
+  );
+
+  UserModel.findOne({}, null, {
+    lean: true,
+    populate: 'test'
+  });
+}
+
+function gh14473() {
+  class AbstractSchema {
+    _id: any;
+    createdAt: Date;
+    updatedAt: Date;
+    deletedAt: Date;
+
+    constructor() {
+      this._id = 4;
+      this.createdAt = new Date();
+      this.updatedAt = new Date();
+      this.deletedAt = new Date();
+    }
+  }
+
+  const generateExists = <D extends AbstractSchema = AbstractSchema>() => {
+    const query: QueryFilter<D> = { deletedAt: { $ne: null } };
+    const query2: QueryFilter<D> = { deletedAt: { $lt: new Date() } } as QueryFilter<D>;
+  };
+}
+
+async function gh14525() {
+  type BeAnObject = Record<string, any>;
+
+  interface SomeDoc {
+    something: string;
+    func(this: TestDoc): string;
+  }
+
+  interface PluginExtras {
+    pfunc(): number;
+  }
+
+  type TestDoc = Document<unknown, BeAnObject, SomeDoc> & PluginExtras;
+
+  type ModelType = Model<SomeDoc, BeAnObject, PluginExtras, BeAnObject>;
+
+  const doc = await ({} as ModelType).findOne({}).populate('test').orFail().exec();
+
+  doc.func();
+
+  let doc2 = await ({} as ModelType).create({});
+  doc2 = await ({} as ModelType).findOne({}).populate('test').orFail().exec();
+}
+
+async function gh14545() {
+  type Test = {
+    _id: Types.ObjectId;
+
+    prop: string;
+    another: string;
+
+    createdAt: number;
+    updatedAt: number;
+  };
+
+  const schema = new Schema<Test>({
+    prop: { type: String },
+    another: { type: String },
+    createdAt: { type: Number },
+    updatedAt: { type: Number }
+  });
+
+  type TestDocument = HydratedDocument<Test>;
+  type TestModel = Model<Test, {}, {}, {}, TestDocument>;
+
+  type SlimTest = Pick<Test, '_id' | 'prop'>;
+  type SlimTestDocument = HydratedDocument<SlimTest>;
+
+  const M = model<Test, TestModel>('Test', schema);
+
+  const myDocs = await M.find({}).exec();
+  const myDoc = await M.findOne({}).exec();
+
+  expect(await M.find({}).select<SlimTest>({ prop: 1 }).exec()).type.toBe<SlimTestDocument[]>();
+  expect(await M.findOne({}).select<SlimTest>({ prop: 1 }).exec()).type.toBe<SlimTestDocument | null>();
+}
+
+function gh14841() {
+  const filter: QueryFilter<{ owners: string[] }> = {
+    $expr: { $lt: [{ $size: '$owners' }, 10] }
+  };
+}
+
+function gh14510() {
+  // From https://stackoverflow.com/questions/56505560/how-to-fix-ts2322-could-be-instantiated-with-a-different-subtype-of-constraint:
+  // "Never assign a concrete type to a generic type parameter, consider it as read-only!"
+  // This function is generally something you shouldn't do in TypeScript, can work around it with `as` though.
+  function findById<ModelType extends {_id: Types.ObjectId | string}>(model: Model<ModelType>, _id: Types.ObjectId | string) {
+    return model.find({ _id: _id } as QueryFilter<ModelType>);
+  }
+}
+
+async function gh15526() {
+  const userSchemaDefinition = { name: String, age: Number } as const;
+  const UserModel = model('User', new Schema(userSchemaDefinition));
+  type UserType = InferRawDocType<typeof userSchemaDefinition>;
+
+  const selection = ['name'] as const satisfies readonly (keyof UserType)[];
+
+  type SelectType = Pick<UserType, (typeof selection)[number]>;
+  const u1 = await UserModel.findOne()
+    .select<SelectType>(selection)
+    .orFail();
+  expect(u1.name).type.toBe<string | undefined | null>();
+  expect(u1).type.not.toHaveProperty('age');
+}
+
+async function gh14173() {
+  const userSchema = new Schema({
+    name: String,
+    account: {
+      amount: Number,
+      owner: { type: String, default: () => 'OWNER' },
+      taxIds: [Number]
+    }
+  });
+  const User = model('User', userSchema);
+
+  const { _id } = await User.create({
+    name: 'test',
+    account: {
+      amount: 25,
+      owner: 'test',
+      taxIds: [42]
+    }
+  });
+
+  const doc = await User
+    .findOne({ _id }, { name: 1, account: { amount: 1 } })
+    .orFail();
+}
+
+async function gh3230() {
+  const Test = model(
+    'Test',
+    new Schema({ name: String, arr: [{ testRef: { type: 'ObjectId', ref: 'Test2' } }] })
+  );
+
+  const schema = new Schema({ name: String });
+  const Test2 = model('Test2', schema);
+  const D = Test2.discriminator('D', new Schema({ prop: String }));
+
+
+  await Test.deleteMany({});
+  await Test2.deleteMany({});
+  const { _id } = await D.create({ name: 'foo', prop: 'bar' });
+  const test = await Test.create({ name: 'test', arr: [{ testRef: _id }] });
+
+  console.log(await Test.findById(test._id).populate('arr.testRef', { name: 1, prop: 1, _id: 0, __t: 0 }));
+}
+
+async function gh12064() {
+  const schema = new Schema({
+    subdoc: new Schema({
+      subdocProp: Number
+    }),
+    nested: {
+      nestedProp: String
+    },
+    documentArray: [{ documentArrayProp: Boolean }]
+  });
+  const TestModel = model('Model', schema);
+
+  await TestModel.findOne({ 'subdoc.subdocProp': { $gt: 0 }, 'nested.nestedProp': { $in: ['foo', 'bar'] }, 'documentArray.documentArrayProp': { $ne: true } });
+  expect(TestModel.findOne).type.not.toBeCallableWith({ 'subdoc.subdocProp': 'taco tuesday' });
+  expect(TestModel.findOne).type.not.toBeCallableWith({ 'nested.nestedProp': true });
+  expect(TestModel.findOne).type.not.toBeCallableWith({ 'documentArray.documentArrayProp': 'taco' });
+}
+
+function gh15671() {
+  interface DefaultQuery {
+    search?: string;
+  }
+
+  type QueryFeaturesProps = {
+    params: Partial<DefaultQuery>;
+  };
+
+  const queryFeatures = async <T, R, TQueryOp>(
+    query: mongoose.Query<R, T, object, T, TQueryOp>,
+    { params }: QueryFeaturesProps
+  ): Promise<{ content: mongoose.GetLeanResultType<T, R, TQueryOp>; result?: number }> => {
+    if (params.search) {
+      query.find({
+        $text: {
+          $search: params.search
+        }
+      });
+    }
+
+    const content = await query.lean().orFail().exec();
+    return {
+      content
+    };
+  };
+}
+
+async function gh15779() {
+  type Entity = {
+    id: string;
+    age: number;
+    name: string;
+  };
+
+  function getV8FilterQuery(filter: QueryFilter<Entity>): QueryFilter<Entity> {
+    return { ...filter, deletedAt: null };
+  }
+
+  const v8Filter = getV8FilterQuery({ age: { $gt: 18 } });
+
+  v8Filter.name = 'test';
+
+  expect(v8Filter.age).type.toBeAssignableFrom(42);
+  expect(v8Filter.age).type.not.toBeAssignableFrom('taco');
+
+  const TestModel = model('Test', new Schema({ age: Number, name: String }));
+  const query = TestModel.find({ age: { $gt: 18 } });
+  TestModel.find(query); // Should compile without errors
+  TestModel.findOne(query);
+  TestModel.deleteMany(query);
+}
+
+async function gh15786() {
+  interface IDoc {
+    nmae: string;
+  }
+
+  interface DocStatics {
+    m1(): void;
+    m2(): void;
+  }
+
+  const schema = new Schema<IDoc, Model<IDoc>, {}, {}, {}, DocStatics>({});
+  schema.static({ m1() {} });
+}
+
+async function gh15779_2() {
+  interface Job {
+    _id: Types.ObjectId;
+    name: string;
+  }
+
+  const jobSchema = new Schema<Job>({ name: String });
+  const JobModel = model<Job>('Job', jobSchema);
+
+  const jobs = await JobModel.aggregate<Job>([
+    { $match: {} as QueryFilter<Job> }
+  ]);
+}
+
+async function gh16062() {
+  const Test = model('Test', new Schema({ runtime: Number }));
+  expect(Test.findOne).type.not.toBeCallableWith({ runtime: { $wrong: 100 } });
+  expect(Test.findOne).type.not.toBeCallableWith({ $and: [{ runtime: { $wrong: 100 } }] });
 }

@@ -26,8 +26,7 @@ describe('insertMany()', function() {
     const Movie = db.model('Movie', schema);
     const start = Date.now();
 
-    const arr = [{ name: 'Star Wars' }, { name: 'The Empire Strikes Back' }];
-    return Movie.insertMany(arr).
+    return Movie.insertMany([{ name: 'Star Wars' }, { name: 'The Empire Strikes Back' }]).
       then(docs => {
         assert.equal(docs.length, 2);
         assert.ok(!docs[0].isNew);
@@ -58,6 +57,132 @@ describe('insertMany()', function() {
     const docs = await Movie.find().sort({ name: 1 });
     assert.ok(docs[0].createdAt.valueOf() >= start);
     assert.ok(!docs[1].createdAt);
+  });
+
+  it('insertMany() with timestamps option createdAt: false, updatedAt: true', async function() {
+    const schema = new Schema({ name: String }, { timestamps: true });
+    const User = db.model('User', schema);
+    const start = Date.now();
+
+    const data = [{ name: 'User1' }, { name: 'User2' }];
+    const result = await User.insertMany(data, {
+      timestamps: { createdAt: false, updatedAt: true }
+    });
+
+    assert.equal(result.length, 2);
+    assert.ok(!result[0].createdAt);
+    assert.ok(!result[1].createdAt);
+    assert.ok(result[0].updatedAt);
+    assert.ok(result[1].updatedAt);
+    assert.ok(result[0].updatedAt.valueOf() >= start);
+    assert.ok(result[1].updatedAt.valueOf() >= start);
+
+    const docs = await User.find();
+    assert.equal(docs.length, 2);
+    assert.ok(!docs[0].createdAt);
+    assert.ok(!docs[1].createdAt);
+    assert.ok(docs[0].updatedAt);
+    assert.ok(docs[1].updatedAt);
+  });
+
+  it('insertMany() with timestamps option createdAt: true, updatedAt: false', async function() {
+    const schema = new Schema({ name: String }, { timestamps: true });
+    const User = db.model('User', schema);
+    const start = Date.now();
+
+    const data = [{ name: 'User1' }, { name: 'User2' }];
+    const result = await User.insertMany(data, {
+      timestamps: { createdAt: true, updatedAt: false }
+    });
+
+    assert.equal(result.length, 2);
+    assert.ok(result[0].createdAt);
+    assert.ok(result[1].createdAt);
+    assert.ok(!result[0].updatedAt);
+    assert.ok(!result[1].updatedAt);
+    assert.ok(result[0].createdAt.valueOf() >= start);
+    assert.ok(result[1].createdAt.valueOf() >= start);
+
+    const docs = await User.find();
+    assert.equal(docs.length, 2);
+    assert.ok(docs[0].createdAt);
+    assert.ok(docs[1].createdAt);
+    assert.ok(!docs[0].updatedAt);
+    assert.ok(!docs[1].updatedAt);
+  });
+
+  it('insertMany() with timestamps option both false', async function() {
+    const schema = new Schema({ name: String }, { timestamps: true });
+    const User = db.model('User', schema);
+
+    const data = [{ name: 'User1' }, { name: 'User2' }];
+    const result = await User.insertMany(data, {
+      timestamps: { createdAt: false, updatedAt: false }
+    });
+
+    assert.equal(result.length, 2);
+    assert.ok(!result[0].createdAt);
+    assert.ok(!result[1].createdAt);
+    assert.ok(!result[0].updatedAt);
+    assert.ok(!result[1].updatedAt);
+
+    const docs = await User.find();
+    assert.equal(docs.length, 2);
+    assert.ok(!docs[0].createdAt);
+    assert.ok(!docs[1].createdAt);
+    assert.ok(!docs[0].updatedAt);
+    assert.ok(!docs[1].updatedAt);
+  });
+
+  it('insertMany() with timestamps: false disables all timestamps', async function() {
+    const schema = new Schema({ name: String }, { timestamps: true });
+    const User = db.model('User', schema);
+
+    const data = [{ name: 'User1' }, { name: 'User2' }];
+    const result = await User.insertMany(data, {
+      timestamps: false
+    });
+
+    assert.equal(result.length, 2);
+    assert.ok(!result[0].createdAt);
+    assert.ok(!result[1].createdAt);
+    assert.ok(!result[0].updatedAt);
+    assert.ok(!result[1].updatedAt);
+
+    const docs = await User.find();
+    assert.equal(docs.length, 2);
+    assert.ok(!docs[0].createdAt);
+    assert.ok(!docs[1].createdAt);
+    assert.ok(!docs[0].updatedAt);
+    assert.ok(!docs[1].updatedAt);
+  });
+
+  it('insertMany() with custom timestamp field names and timestamps option', async function() {
+    const schema = new Schema({ name: String }, {
+      timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' }
+    });
+    const User = db.model('User', schema);
+    const start = Date.now();
+
+    const data = [{ name: 'User1' }, { name: 'User2' }];
+    const result = await User.insertMany(data, {
+      timestamps: { createdAt: false, updatedAt: true }
+    });
+
+    assert.equal(result.length, 2);
+    assert.ok(!result[0].created_at);
+    assert.ok(!result[1].created_at);
+    assert.ok(result[0].updated_at);
+    assert.ok(result[1].updated_at);
+    assert.ok(result[0].updated_at.valueOf() >= start);
+    assert.ok(result[1].updated_at.valueOf() >= start);
+
+    const docs = await User.find();
+    assert.equal(docs.length, 2);
+    assert.ok(!docs[0].created_at);
+    assert.ok(!docs[1].created_at);
+    assert.ok(docs[0].updated_at);
+    assert.ok(docs[1].updated_at);
   });
 
   it('insertMany() with nested timestamps (gh-12060)', async function() {
@@ -93,8 +218,7 @@ describe('insertMany()', function() {
     }, { timestamps: true });
     const Movie = db.model('Movie', schema);
 
-    const arr = [{ name: 'Star Wars' }, { name: 'The Empire Strikes Back' }];
-    let docs = await Movie.insertMany(arr);
+    let docs = await Movie.insertMany([{ name: 'Star Wars' }, { name: 'The Empire Strikes Back' }]);
     assert.equal(docs.length, 2);
     assert.ok(!docs[0].isNew);
     assert.ok(!docs[1].isNew);
@@ -281,26 +405,23 @@ describe('insertMany()', function() {
     });
     let calledPre = 0;
     let calledPost = 0;
-    schema.pre('insertMany', function(next, docs) {
+    schema.pre('insertMany', function(docs) {
       assert.equal(docs.length, 2);
       assert.equal(docs[0].name, 'Star Wars');
       ++calledPre;
-      next();
     });
-    schema.pre('insertMany', function(next, docs) {
+    schema.pre('insertMany', function(docs) {
       assert.equal(docs.length, 2);
       assert.equal(docs[0].name, 'Star Wars');
       docs[0].name = 'A New Hope';
       ++calledPre;
-      next();
     });
     schema.post('insertMany', function() {
       ++calledPost;
     });
     const Movie = db.model('Movie', schema);
 
-    const arr = [{ name: 'Star Wars' }, { name: 'The Empire Strikes Back' }];
-    let docs = await Movie.insertMany(arr);
+    let docs = await Movie.insertMany([{ name: 'Star Wars' }, { name: 'The Empire Strikes Back' }]);
     assert.equal(docs.length, 2);
     assert.equal(calledPre, 2);
     assert.equal(calledPost, 1);
@@ -430,6 +551,91 @@ describe('insertMany()', function() {
     assert.ok(!err.mongoose.validationErrors[0].errors['year']);
     assert.ok(err.mongoose.validationErrors[1].errors['year']);
     assert.ok(!err.mongoose.validationErrors[1].errors['name']);
+  });
+
+  it('insertMany() keeps WriteError instances in writeErrors with ordered false (gh-16607)', async function() {
+    const schema = new Schema({
+      name: { type: String, required: true, unique: true }
+    });
+    const Movie = db.model('Movie', schema);
+    await Movie.init();
+
+    const arr = [
+      { foo: 'The Phantom Menace' },
+      { name: 'The Empire Strikes Back' },
+      { name: 'The Empire Strikes Back' }
+    ];
+    const err = await Movie.insertMany(arr, { ordered: false }).then(() => null, err => err);
+
+    assert.ok(err);
+    assert.equal(err.writeErrors.length, 1);
+    const writeError = err.writeErrors[0];
+    assert.equal(writeError.constructor.name, 'WriteError');
+    assert.equal(writeError.code, 11000);
+    assert.equal(writeError.index, 2);
+    assert.ok(writeError.errmsg.includes('duplicate key'));
+    assert.equal(writeError.getOperation().name, 'The Empire Strikes Back');
+    assert.strictEqual(err.results[2], writeError);
+  });
+
+  it('insertMany() validation errors include index property with ordered false and rawResult', async function() {
+    const schema = new Schema({
+      title: { type: String, required: true },
+      requiredField: { type: String, required: true }
+    });
+    const User = db.model('User', schema);
+
+    const arr = [
+      { title: 'title1', requiredField: 'field1' },
+      { title: 'title2' }, // Missing requiredField
+      { requiredField: 'field3' }, // Missing title
+      { title: 'title4', requiredField: 'field4' }
+    ];
+    const opts = { ordered: false, rawResult: true };
+    const res = await User.insertMany(arr, opts);
+
+    assert.equal(res.insertedCount, 2);
+    assert.equal(res.mongoose.validationErrors.length, 2);
+
+    // Check first validation error (index 1)
+    const error1 = res.mongoose.validationErrors[0];
+    assert.equal(error1.index, 1);
+    assert.ok(error1.errors['requiredField']);
+
+    // Check second validation error (index 2)
+    const error2 = res.mongoose.validationErrors[1];
+    assert.equal(error2.index, 2);
+    assert.ok(error2.errors['title']);
+  });
+
+  it('insertMany() validation errors include index property with throwOnValidationError', async function() {
+    const schema = new Schema({
+      title: { type: String, required: true },
+      requiredField: { type: String, required: true }
+    });
+    const User = db.model('User', schema);
+
+    const arr = [
+      { title: 'title1', requiredField: 'field1' },
+      { title: 'title2' }, // Missing requiredField
+      { requiredField: 'field3' }, // Missing title
+      { title: 'title4', requiredField: 'field4' }
+    ];
+    const opts = { ordered: false, rawResult: true, throwOnValidationError: true };
+    const err = await User.insertMany(arr, opts).then(() => null, err => err);
+
+    assert.ok(err);
+    assert.equal(err.validationErrors.length, 2);
+
+    // Check first validation error (index 1)
+    const error1 = err.validationErrors[0];
+    assert.equal(error1.index, 1);
+    assert.ok(error1.errors['requiredField']);
+
+    // Check second validation error (index 2)
+    const error2 = err.validationErrors[1];
+    assert.equal(error2.index, 2);
+    assert.ok(error2.errors['title']);
   });
 
   it('insertMany() populate option (gh-9720)', async function() {
@@ -648,5 +854,112 @@ describe('insertMany()', function() {
     const Money = db.model('Test', schema);
 
     await Money.insertMany([{ amount: '123.45' }]);
+  });
+
+  it('async stack traces with server error (gh-15317)', async function insertManyWithServerError() {
+    const schema = new mongoose.Schema({
+      name: { type: String, unique: true }
+    });
+    const User = db.model('Test', schema);
+    await User.init();
+
+    const err = await User.insertMany([
+      { name: 'A' },
+      { name: 'A' }
+    ]).then(() => null, err => err);
+    assert.equal(err.name, 'MongoBulkWriteError');
+    assert.ok(err.stack.includes('insertManyWithServerError'));
+  });
+
+  it('async stack traces with post insertMany error (gh-15317)', async function postInsertManyError() {
+    const schema = new mongoose.Schema({
+      name: { type: String }
+    });
+    schema.post('insertMany', async function() {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      throw new Error('postInsertManyError');
+    });
+    const User = db.model('Test', schema);
+    await User.init();
+
+    const err = await User.insertMany([
+      { name: 'A' },
+      { name: 'A' }
+    ]).then(() => null, err => err);
+    assert.equal(err.message, 'postInsertManyError');
+    assert.ok(err.stack.includes('postInsertManyError'));
+  });
+
+  describe('pre-hook errors should propagate', function() {
+    it('insertMany() should throw when pre-hook throws an error', async function() {
+      // Arrange
+      const preHookError = new Error('Pre-hook error - should stop insertMany');
+      const { User } = createTestContext({ preHookError });
+
+      // Act
+      const error = await User.insertMany([{ name: 'test1' }, { name: 'test2' }]).then(() => null, err => err);
+
+      // Assert
+      assert.ok(error);
+      assert.equal(error.message, preHookError.message);
+    });
+
+    it('insertMany() should not insert documents when pre-hook throws', async function() {
+      // Arrange
+      const preHookError = new Error('Pre-hook error - should stop insertMany');
+      const { User } = createTestContext({ preHookError });
+
+      // Act
+      await User.insertMany([{ name: 'test1' }, { name: 'test2' }]).catch(() => {});
+
+      // Assert
+      const count = await User.countDocuments();
+      assert.equal(count, 0);
+    });
+
+    it('insertMany() should call error post hook when pre-hook throws', async function() {
+      // Arrange
+      let errorPostHookCalled = false;
+      let normalPostHookCalled = false;
+      const preHookError = new Error('Pre-hook error - should stop insertMany');
+      const { User } = createTestContext({
+        preHookError,
+        postHook: function() {
+          normalPostHookCalled = true;
+        },
+        errorPostHook: function(error, _docs, next) {
+          if (error && error.message === preHookError.message) {
+            errorPostHookCalled = true;
+          }
+          next(error);
+        }
+      });
+
+      // Act
+      await User.insertMany([{ name: 'test1' }]).catch(() => {});
+
+      // Assert
+      assert.equal(errorPostHookCalled, true);
+      assert.equal(normalPostHookCalled, false);
+    });
+
+    function createTestContext(options) {
+      const schema = new Schema({ name: String });
+
+      schema.pre('insertMany', function() {
+        throw options.preHookError;
+      });
+
+      if (options.postHook) {
+        schema.post('insertMany', options.postHook);
+      }
+
+      if (options.errorPostHook) {
+        schema.post('insertMany', options.errorPostHook);
+      }
+
+      const User = db.model('User', schema);
+      return { User };
+    }
   });
 });

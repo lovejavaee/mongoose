@@ -79,14 +79,15 @@ describe('model', function() {
       });
 
       let startTime, endTime;
-      SchemaWithPreSaveHook.pre('save', true, function hook(next, done) {
-        setTimeout(function() {
-          countPre++;
-          if (countPre === 1) startTime = Date.now();
-          else if (countPre === 4) endTime = Date.now();
-          next();
-          done();
-        }, 100);
+      SchemaWithPreSaveHook.pre('save', function hook() {
+        return new Promise(resolve => {
+          setTimeout(() => {
+            countPre++;
+            if (countPre === 1) startTime = Date.now();
+            else if (countPre === 4) endTime = Date.now();
+            resolve();
+          }, 100);
+        });
       });
       SchemaWithPreSaveHook.post('save', function() {
         countPost++;
@@ -166,6 +167,97 @@ describe('model', function() {
             assert.ok(doc._id);
           });
       });
+
+      it('ignores undefined last arg (gh-13487)', async function() {
+        await B.deleteMany({});
+        await B.create({ title: 'foo' }, void 0);
+        const docs = await B.find();
+        assert.equal(docs.length, 1);
+        assert.equal(docs[0].title, 'foo');
+      });
+    });
+    describe('ordered', function() {
+      it('runs the document insertion in a series when using the ordered option gh-4038', async function() {
+        const countSchema = new Schema({ n: Number });
+        const testSchema = new Schema({ name: { type: String, unique: true }, reference: Number });
+
+        const Count = db.model('gh4038', countSchema);
+
+        testSchema.pre('save', async function() {
+          const doc = await Count.findOneAndUpdate({}, { $inc: { n: 1 } }, { new: true, upsert: true });
+          this.reference = doc.n;
+        });
+
+        const Test = db.model('gh4038Test', testSchema);
+        await Test.init();
+        const data = [];
+        for (let i = 0; i < 11; i++) {
+          data.push({ name: 'Test' + Math.abs(i - 4) });
+        }
+        await Test.create(data, { ordered: true }).catch(err => err);
+        const docs = await Test.find();
+        assert.equal(docs.length, 5);
+      });
+      it('should throw an error only after all the documents have finished saving gh-4628', async function() {
+        const testSchema = new Schema({ name: { type: String, unique: true } });
+
+
+        const Test = db.model('gh4628Test', testSchema);
+        await Test.init();
+        const data = [];
+        for (let i = 0; i < 11; i++) {
+          data.push({ name: 'Test' + Math.abs(i - 4) });
+        }
+        await Test.create(data, { ordered: false }).catch(err => err);
+        const docs = await Test.find();
+        assert.equal(docs.length, 7); // docs 1,2,3,4 should not go through 11-4 == 7
+      });
+
+      it('should return the first error immediately if "aggregateErrors" is not explicitly set (ordered)', async function() {
+        const testSchema = new Schema({ name: { type: String, required: true } });
+
+        const TestModel = db.model('gh1731-1', testSchema);
+
+        const res = await TestModel.create([{ name: 'test' }, {}, { name: 'another' }], { ordered: true }).then(null).catch(err => err);
+
+        assert.ok(res instanceof mongoose.Error.ValidationError);
+      });
+
+      it('should not return errors immediately if "aggregateErrors" is "true" (ordered)', async function() {
+        const testSchema = new Schema({ name: { type: String, required: true } });
+
+        const TestModel = db.model('gh1731-2', testSchema);
+
+        const res = await TestModel.create([{ name: 'test' }, {}, { name: 'another' }], { ordered: true, aggregateErrors: true });
+
+        assert.equal(res.length, 3);
+        assert.ok(res[0] instanceof mongoose.Document);
+        assert.ok(res[1] instanceof mongoose.Error.ValidationError);
+        assert.ok(res[2] instanceof mongoose.Document);
+      });
+    });
+
+    it('should return the first error immediately if "aggregateErrors" is not explicitly set', async function() {
+      const testSchema = new Schema({ name: { type: String, required: true } });
+
+      const TestModel = db.model('gh1731-3', testSchema);
+
+      const res = await TestModel.create([{ name: 'test' }, {}, { name: 'another' }], {}).then(null).catch(err => err);
+
+      assert.ok(res instanceof mongoose.Error.ValidationError);
+    });
+
+    it('should not return errors immediately if "aggregateErrors" is "true"', async function() {
+      const testSchema = new Schema({ name: { type: String, required: true } });
+
+      const TestModel = db.model('gh1731-4', testSchema);
+
+      const res = await TestModel.create([{ name: 'test' }, {}, { name: 'another' }], { aggregateErrors: true });
+
+      assert.equal(res.length, 3);
+      assert.ok(res[0] instanceof mongoose.Document);
+      assert.ok(res[1] instanceof mongoose.Error.ValidationError);
+      assert.ok(res[2] instanceof mongoose.Document);
     });
   });
 });

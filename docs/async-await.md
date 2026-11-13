@@ -6,32 +6,12 @@
 
 ## Basic Use
 
-Async/await lets us write asynchronous code as if it were synchronous. 
+Async/await lets us write asynchronous code as if it were synchronous.
 This is especially helpful for avoiding callback hell when executing multiple async operations in sequence--a common scenario when working with Mongoose.
 Each of the three functions below retrieves a record from the database, updates it, and prints the updated record to the console.
 
 ```javascript
-// Works.
-function callbackUpdate() {
-  MyModel.findOne({ firstName: 'franklin', lastName: 'roosevelt' }, function(err, doc) {
-    if (err) {
-      handleError(err);
-    }
-
-    doc.middleName = 'delano';
-
-    doc.save(function(err, updatedDoc) {
-      if (err) {
-        handleError(err);
-      }
-
-      // Final logic is 2 callbacks deep
-      console.log(updatedDoc);
-    });
-  });
-}
-
-// Better.
+// Using promise chaining
 function thenUpdate() {
   MyModel.findOne({ firstName: 'franklin', lastName: 'roosevelt' })
     .then(function(doc) {
@@ -44,7 +24,7 @@ function thenUpdate() {
     });
 }
 
-// Best?
+// Using async/await
 async function awaitUpdate() {
   try {
     const doc = await MyModel.findOne({
@@ -62,12 +42,12 @@ async function awaitUpdate() {
 }
 ```
 
-Note that the specific fulfillment values of different Mongoose methods vary, and may be affected by configuration. Please refer to the [API documentation](api/mongoose.html.html) for information about specific methods.
+Note that the specific fulfillment values of different Mongoose methods vary, and may be affected by configuration. Please refer to the [API documentation](api/mongoose.html) for information about specific methods.
 
 ## Async Functions
 
 Adding the keyword *async* to a JavaScript function automatically causes it to return a native JavaScript promise.
-This is true [regardless of the return value we specify in the function body](http://thecodebarbarian.com/async-functions-in-javascript.html#an-async-function-always-returns-a-promise).     
+This is true [regardless of the return value we specify in the function body](http://thecodebarbarian.com/async-functions-in-javascript.html#an-async-function-always-returns-a-promise).
 
 ```javascript
 async function getUser() {
@@ -102,13 +82,13 @@ async function doStuffWithUser() {
 }
 ```
 
-<h2 id="queries">Async/Await with Mongoose Queries</h2>
+## Async/Await with Mongoose Queries {#queries}
 
 Under the hood, [async/await is syntactic sugar](https://developer.mozilla.org/en-US/docs/Learn/JavaScript/Asynchronous/Async_await) over the Promise API.
-Due to the surprisingly simple way promises are implemented in JavaScript, the keyword `await` will try to unwrap any object with a property whose key is the string ‘then’ and whose value is a function. 
-Such objects belong to a broader class of objects called [thenables](https://masteringjs.io/tutorials/fundamentals/thenable). 
-If the thenable being unwrapped is a genuine promise, e.g. an instance of the [Promise constructor](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise), we enjoy several guarantees about how the object’s ‘then’ function will behave. 
-However, Mongoose provides several static helper methods that return a different class of thenable object called a [Query](queries.html)--and [Queries are not promises](queries.html#queries-are-not-promises). 
+Due to the surprisingly simple way promises are implemented in JavaScript, the keyword `await` will try to unwrap any object with a property whose key is the string ‘then’ and whose value is a function.
+Such objects belong to a broader class of objects called [thenables](https://masteringjs.io/tutorials/fundamentals/thenable).
+If the thenable being unwrapped is a genuine promise, e.g. an instance of the [Promise constructor](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise), we enjoy several guarantees about how the object’s ‘then’ function will behave.
+However, Mongoose provides several static helper methods that return a different class of thenable object called a [Query](queries.html)--and [Queries are not promises](queries.html#queries-are-not-promises).
 Because Queries are also *thenables*, we can interact with a Query using async/await just as we would interact with a genuine promise, with one key difference: observing the fulfillment value of a genuine promise cannot under any circumstances change that value, but trying to re-observe the value of a Query may cause the Query to be re-executed.
 
 ```javascript

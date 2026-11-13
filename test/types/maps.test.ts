@@ -1,4 +1,5 @@
-import { Schema, model, Document, Model, Types } from 'mongoose';
+import { Schema, model, Model, Types } from 'mongoose';
+import { expect } from 'tstyche';
 
 interface ITest {
   map1: Map<string, number>,
@@ -6,7 +7,7 @@ interface ITest {
   map3: Map<string, number>
 }
 
-const schema: Schema = new Schema<ITest>({
+const schema = new Schema<ITest>({
   map1: {
     type: Map,
     of: Number
@@ -69,5 +70,33 @@ function gh10575() {
 function gh10872(): void {
   const doc = new Test({});
 
-  doc.toJSON().map1.foo;
+  doc.toJSON({ flattenMaps: true }).map1.foo;
+}
+
+function gh13755() {
+  const testSchema = new Schema({
+    instance: {
+      type: 'Map',
+      of: String
+    }
+  } as const);
+
+  const TestModel = model('Test', testSchema);
+  const doc = new TestModel();
+  expect(doc.instance).type.toBe<Map<string, string> | undefined | null>();
+}
+
+function mongooseMapObjectIdKeys() {
+  const votes = new Types.Map<number>();
+  const userId = new Types.ObjectId();
+
+  expect(votes.set(userId, 1)).type.toBe<Types.Map<number>>();
+  expect(votes.get(userId)).type.toBe<number | undefined>();
+  expect(votes.get(userId, { getters: false })).type.toBe<number | undefined>();
+  expect(votes.has(userId)).type.toBe<boolean>();
+  expect(votes.delete(userId)).type.toBe<boolean>();
+  expect(votes.has('test')).type.toBe<boolean>();
+
+  expect(votes.has).type.not.toBeCallableWith(42);
+  expect(votes.set).type.not.toBeCallableWith({ obj: 42 }, 1);
 }

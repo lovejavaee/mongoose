@@ -131,7 +131,7 @@ describe('timestamps', function() {
 
       const indexes = testSchema.indexes();
       assert.deepEqual(indexes, [
-        [{ updatedAt: 1 }, { background: true, expireAfterSeconds: 7200 }]
+        [{ updatedAt: 1 }, { expireAfterSeconds: 7200 }]
       ]);
     });
   });
@@ -608,12 +608,13 @@ describe('timestamps', function() {
     });
 
     it('should change updatedAt when findOneAndUpdate', async function() {
+      await Cat.deleteMany({});
       await Cat.create({ name: 'test123' });
       let doc = await Cat.findOne({ name: 'test123' });
       const old = doc.updatedAt;
+      await new Promise(resolve => setTimeout(resolve, 10));
       doc = await Cat.findOneAndUpdate({ name: 'test123' }, { $set: { hobby: 'fish' } }, { new: true });
-      assert.ok(doc.updatedAt.getTime() > old.getTime());
-
+      assert.ok(doc.updatedAt.getTime() > old.getTime(), `Expected ${doc.updatedAt} > ${old}`);
     });
 
     it('insertMany with createdAt off (gh-6381)', async function() {
@@ -695,6 +696,7 @@ describe('timestamps', function() {
       let group = await Group.create({ cats: [{ name: 'Garfield' }] });
       group.cats.push({ name: 'Keanu' });
       await group.save();
+      await new Promise(resolve => setTimeout(resolve, 5));
       group = await Group.findById(group._id);
       assert.ok(group.cats[1].createdAt);
       assert.ok(group.cats[1].createdAt.getTime() > now);
@@ -883,6 +885,41 @@ describe('timestamps', function() {
     assert.ok(church.events[0].users[1].createdAt);
   });
 
+  it('sets timestamps when using $push/$addToSet with array filters on deeply nested arrays (gh-8809)', async function() {
+    const sceneSchema = new Schema({ narration: String }, { timestamps: true });
+    const pointSchema = new Schema({ scenes: [sceneSchema] }, { timestamps: true });
+    const lessonSchema = new Schema({ points: [pointSchema] }, { timestamps: true });
+    const moduleSchema = new Schema({ lessons: [lessonSchema] });
+    const courseSchema = new Schema({ modules: [moduleSchema] }, { timestamps: true });
+
+    const Course = db.model('Test', courseSchema);
+
+    const course = await Course.create({
+      modules: [{ lessons: [{ points: [{ scenes: [] }] }] }]
+    });
+    const pointId = course.modules[0].lessons[0].points[0]._id;
+
+    const afterPush = await Course.findOneAndUpdate(
+      { _id: course._id },
+      { $push: { 'modules.$[].lessons.$[].points.$[point].scenes': { $each: [{ narration: 'intro' }] } } },
+      { arrayFilters: [{ 'point._id': pointId }], new: true }
+    );
+    const scene = afterPush.modules[0].lessons[0].points[0].scenes[0];
+    assert.equal(scene.narration, 'intro');
+    assert.ok(scene.createdAt);
+    assert.ok(scene.updatedAt);
+
+    const lessonId = course.modules[0].lessons[0]._id;
+    const afterAddToSet = await Course.findOneAndUpdate(
+      { _id: course._id },
+      { $addToSet: { 'modules.$[].lessons.$[lesson].points': { scenes: [] } } },
+      { arrayFilters: [{ 'lesson._id': lessonId }], new: true }
+    );
+    const point = afterAddToSet.modules[0].lessons[0].points[1];
+    assert.ok(point.createdAt);
+    assert.ok(point.updatedAt);
+  });
+
   it('sets createdAt when creating new single nested subdoc (gh-11603)', async function() {
     const childSchema = new mongoose.Schema(
       { name: String },
@@ -1008,6 +1045,53 @@ describe('timestamps', function() {
       const keys = Object.keys(address.toObject());
       assert.deepStrictEqual(keys, ['location', '_id', 'createdAt', 'updatedAt']);
     }
+  });
+  it('should avoid setting null update when updating document with timestamps gh-13379', async function() {
+
+    const subWithTimestampSchema = new Schema({
+      subName: {
+        type: String,
+        default: 'anonymous',
+        required: true
+      }
+    });
+
+    subWithTimestampSchema.set('timestamps', true);
+
+    const testSchema = new Schema({
+      name: String,
+      sub: { type: subWithTimestampSchema }
+    });
+
+    const Test = db.model('gh13379', testSchema);
+
+    const doc = new Test({
+      name: 'Test Testerson',
+      sub: { subName: 'John' }
+    });
+    await doc.save();
+    await Test.updateMany({}, [{ $set: { updateCounter: 1 } }], { updatePipeline: true });
+    const test = await Test.countDocuments({ null: { $exists: true } });
+    assert.equal(test, 0);
+    // now we need to make sure that the solution didn't prevent the updateCounter addition
+    const check = await Test.findOne();
+    assert(check.toString().includes('updateCounter: 1'));
+  });
+
+  it('clone() keeps $timestamps set by a child schema with timestamps (gh-16650)', async function() {
+    const childSchema = new Schema({ name: String }, { timestamps: true });
+    const parentSchema = new Schema({ child: childSchema });
+
+    assert.deepStrictEqual(parentSchema.clone().$timestamps, parentSchema.$timestamps);
+
+    // Embedded discriminators clone the schema, so saving used to throw in timestampsPreSave
+    const baseSchema = new Schema({ kind: String }, { discriminatorKey: 'kind' });
+    const testSchema = new Schema({ items: [baseSchema] });
+    testSchema.path('items').discriminator('WithChild', new Schema({ child: childSchema }));
+    const Test = db.model('Test', testSchema);
+
+    const doc = await Test.create({ items: [{ kind: 'WithChild', child: { name: 'foo' } }] });
+    assert.ok(doc.items[0].child.createdAt);
   });
 });
 

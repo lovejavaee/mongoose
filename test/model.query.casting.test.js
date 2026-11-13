@@ -436,7 +436,7 @@ describe('model query casting', function() {
 
   describe('$elemMatch', function() {
     it('should cast String to ObjectId in $elemMatch', async function() {
-      const commentId = new mongoose.Types.ObjectId(111);
+      const commentId = new mongoose.Types.ObjectId('1'.repeat(24));
 
       const post = new BlogPostB({ comments: [{ _id: commentId }] });
       const id = post._id.toString();
@@ -447,13 +447,16 @@ describe('model query casting', function() {
     });
 
     it('should cast String to ObjectId in $elemMatch inside $not', async function() {
-      const commentId = new mongoose.Types.ObjectId(111);
+      const commentId = new mongoose.Types.ObjectId('1'.repeat(24));
 
       const post = new BlogPostB({ comments: [{ _id: commentId }] });
       const id = post._id.toString();
 
       await post.save();
-      const doc = await BlogPostB.findOne({ _id: id, comments: { $not: { $elemMatch: { _id: commentId.toString() } } } });
+      const doc = await BlogPostB.findOne({
+        _id: id,
+        comments: { $not: { $elemMatch: { _id: commentId.toString() } } }
+      });
       assert.equal(doc, null);
     });
 
@@ -753,6 +756,138 @@ describe('model query casting', function() {
         const doc = updated.toObject();
         assert.strictEqual(doc.outerArray[0].innerArray[0], 'onetwothree');
       });
+  });
+  it('should not throw a cast error when dealing with an array of an array of strings in combination with $elemMatch and $not (gh-13880)', async function() {
+    const testSchema = new Schema({
+      arr: [[String]]
+    });
+    const Test = db.model('Test', testSchema);
+    const doc = new Test({ arr: [[1, 2, 3], [2, 3, 4]] });
+    await doc.save();
+    const query = { arr: { $elemMatch: { $not: { $elemMatch: { $eq: '1' } } } } };
+    const res = await Test.find(query);
+    assert(res);
+    assert(res[0].arr);
+  });
+  it('casts operators under $not inside $elemMatch on primitive arrays', async function() {
+    const testSchema = new Schema({
+      name: String,
+      scores: [Number],
+      tags: [Schema.Types.ObjectId]
+    });
+    const Test = db.model('Test', testSchema);
+    const tagId = new mongoose.Types.ObjectId();
+    await Test.create([
+      { name: 'low', scores: [1, 2], tags: [tagId] },
+      { name: 'high', scores: [50, 60], tags: [new mongoose.Types.ObjectId()] }
+    ]);
+
+    const filter = Test.find({
+      scores: { $elemMatch: { $not: { $lt: '10' }, $gt: '0' } },
+      tags: { $elemMatch: { $not: { $eq: tagId.toString() } } }
+    }).cast();
+    assert.strictEqual(filter.scores.$elemMatch.$not.$lt, 10);
+    assert.strictEqual(filter.scores.$elemMatch.$gt, 0);
+    assert.ok(filter.tags.$elemMatch.$not.$eq instanceof mongoose.Types.ObjectId);
+
+    let res = await Test.find({ scores: { $elemMatch: { $not: { $lt: '10' } } } });
+    assert.deepStrictEqual(res.map(doc => doc.name), ['high']);
+
+    res = await Test.find({ tags: { $elemMatch: { $not: { $eq: tagId.toString() } } } });
+    assert.deepStrictEqual(res.map(doc => doc.name), ['high']);
+
+    for (const strictQuery of [true, 'throw']) {
+      res = await Test.find({ scores: { $elemMatch: { $not: { $lt: 10 } } } }).setOptions({ strictQuery });
+      assert.deepStrictEqual(res.map(doc => doc.name), ['high']);
+    }
+
+    res = await Test.find({ scores: { $elemMatch: { $not: /abc/ } } });
+    assert.deepStrictEqual(res.map(doc => doc.name).sort(), ['high', 'low']);
+  });
+  it('should not throw a cast error when dealing with an array of objects in combination with $elemMatch (gh-13974)', async function() {
+    const testSchema = new Schema({
+      arr: [Object]
+    });
+
+    const Test = db.model('Test', testSchema);
+    const obj1 = new Test({ arr: [{ id: 'one' }, { id: 'two' }] });
+    await obj1.save();
+
+    const obj2 = new Test({ arr: [{ id: 'two' }, { id: 'three' }] });
+    await obj2.save();
+
+    const obj3 = new Test({ arr: [{ id: 'three' }, { id: 'four' }] });
+    await obj3.save();
+
+    const res = await Test.find({
+      arr: {
+        $elemMatch: {
+          $or: [{ id: 'one' }, { id: 'two' }]
+        }
+      }
+    }).sort({ _id: 1 });
+    assert.ok(res);
+    assert.deepStrictEqual(res.map(doc => doc.arr[1].id), ['two', 'three']);
+  });
+
+  it('should not throw a cast error when dealing with an array of objects in combination with $elemMatch and nested $and', async function() {
+    const testSchema = new Schema({
+      arr: [Object]
+    });
+
+    const Test = db.model('Test', testSchema);
+    const obj1 = new Test({ arr: [{ id: 'one', name: 'sample1' }, { id: 'two' }] });
+    await obj1.save();
+
+    const obj2 = new Test({ arr: [{ id: 'two', name: 'sample1' }, { id: 'three' }] });
+    await obj2.save();
+
+    const obj3 = new Test({ arr: [{ id: 'three', name: 'sample1' }, { id: 'four' }] });
+    await obj3.save();
+    const res = await Test.find({
+      arr: {
+        $elemMatch: {
+          $and: [
+            { name: 'sample1' },
+            { $or: [
+              { id: 'one' },
+              { id: 'two' }
+            ] }
+          ]
+        }
+      }
+    }).sort({ _id: 1 });
+    assert.ok(res);
+    assert.equal(res.length, 2);
+    assert.deepStrictEqual(res.map(doc => doc.arr[1].id), ['two', 'three']);
+  });
+
+  it('should not mutate original object with UUID in query with $elemMatch (gh-15364)', async function() {
+    const schemaParticipant = new Schema(
+      {
+        user: mongoose.Schema.Types.UUID
+      },
+      { _id: false }
+    );
+
+    const TestSchema = new Schema(
+      {
+        participants: { type: [schemaParticipant] },
+        date: { type: Number }
+      }
+    );
+
+    const Test = db.model('Test', TestSchema);
+
+    const peer = {
+      user: new mongoose.mongo.BSON.UUID('1583b99d-8462-4343-8dfd-9105252e5662')
+    };
+
+    const originalUser = peer.user;
+
+    await Test.findOne({ participants: { $elemMatch: peer } });
+
+    assert.strictEqual(peer.user, originalUser);
   });
 });
 

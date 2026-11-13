@@ -7,6 +7,7 @@ const start = require('./common');
 const assert = require('assert');
 const random = require('./util').random;
 const stream = require('stream');
+const util = require('util');
 
 const collection = 'blogposts_' + random();
 
@@ -88,6 +89,42 @@ describe('mongoose module:', function() {
     assert.equal(written.length, 1);
     assert.ok(written[0].startsWith('users.findOne('));
     await mongoose.disconnect();
+  });
+
+  it('should collect the args correctly gh-13364', async function() {
+    const mongoose = new Mongoose();
+    const conn = await mongoose.connect(start.uri);
+    let actual = '';
+    mongoose.set('debug', (collectionName, methodName, ...methodArgs) => {
+      actual = `${collectionName}.${methodName}(${util.inspect(methodArgs).slice(2, -2)})`;
+    });
+    const user = conn.connection.collection('User');
+    await user.findOne({ key: 'value' });
+    assert.equal('User.findOne({ key: \'value\' })', actual);
+  });
+
+  it('debug timestamp option prefixes ISO timestamp to console output', async function() {
+    const mongoose = new Mongoose();
+
+    mongoose.set('debug', { timestamp: true, color: false });
+
+    const stub = sinon.stub(console, 'info');
+    try {
+      await mongoose.connect(start.uri);
+      const User = mongoose.model('User', new Schema({ name: String }));
+      await User.findOne();
+
+      assert.ok(stub.calledOnce);
+      const output = stub.firstCall.args[0];
+
+      // Should start with an ISO 8601 timestamp
+      assert.ok(/^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\]/.test(output), `Expected bracketed ISO timestamp prefix, got: ${output}`);
+      // Should still contain the regular Mongoose log
+      assert.ok(output.includes('Mongoose: '), `Expected "Mongoose: " in output, got: ${output}`);
+    } finally {
+      stub.restore();
+      await mongoose.disconnect();
+    }
   });
 
   it('{g,s}etting options', function() {
@@ -202,7 +239,7 @@ describe('mongoose module:', function() {
 
     mongoose.set('toJSON', { virtuals: true });
 
-    const schema = new Schema({});
+    const schema = new mongoose.Schema({});
     schema.virtual('foo').get(() => 42);
     const M = mongoose.model('Test', schema);
 
@@ -212,7 +249,7 @@ describe('mongoose module:', function() {
 
     assert.equal(doc.toJSON({ virtuals: false }).foo, void 0);
 
-    const schema2 = new Schema({}, { toJSON: { virtuals: true } });
+    const schema2 = new mongoose.Schema({}, { toJSON: { virtuals: true } });
     schema2.virtual('foo').get(() => 'bar');
     const M2 = mongoose.model('Test2', schema2);
 
@@ -226,13 +263,37 @@ describe('mongoose module:', function() {
 
     mongoose.set('toObject', { virtuals: true });
 
-    const schema = new Schema({});
+    const schema = new mongoose.Schema({});
     schema.virtual('foo').get(() => 42);
     const M = mongoose.model('Test', schema);
 
     const doc = new M();
     assert.equal(doc.toObject().foo, 42);
     assert.strictEqual(doc.toJSON().foo, void 0);
+  });
+
+  it('set() with null (gh-16130)', function() {
+    const mongoose = new Mongoose();
+
+    assert.throws(
+      () => mongoose.set(null),
+      /"null" is not a valid option to set/
+    );
+
+    assert.throws(
+      () => mongoose.set(undefined),
+      /"undefined" is not a valid option to set/
+    );
+
+    assert.throws(
+      () => mongoose.set(null, 'test'),
+      /"null" is not a valid option to set/
+    );
+
+    assert.throws(
+      () => mongoose.set(undefined, 'test'),
+      /"undefined" is not a valid option to set/
+    );
   });
 
   it('strict option (gh-6858)', function() {
@@ -289,9 +350,8 @@ describe('mongoose module:', function() {
     mong.plugin(function(s) {
       calls.push(s);
 
-      s.pre('save', function(next) {
+      s.pre('save', function() {
         ++preSaveCalls;
-        next();
       });
 
       s.methods.testMethod = function() { return 42; };
@@ -416,6 +476,101 @@ describe('mongoose module:', function() {
     return Promise.resolve();
   });
 
+  it('global plugins with applyPluginsToChildSchemas (gh-13887)', function() {
+    const m = new Mongoose();
+    m.set('applyPluginsToChildSchemas', false);
+
+    const called = [];
+    m.plugin(function(s) {
+      called.push(s);
+    });
+
+    const schema = new m.Schema({
+      subdoc: new m.Schema({ name: String }),
+      arr: [new m.Schema({ name: String })]
+    });
+
+    m.model('Test', schema);
+    assert.equal(called.length, 1);
+    assert.ok(called.indexOf(schema) !== -1);
+  });
+
+  it('does not apply sharding or saveSubdocs plugins to subdocuments', function() {
+    const m = new Mongoose();
+    const childSchema = new m.Schema({ name: String }, { shardKey: { name: 1 } });
+    const Parent = m.model('Parent', new m.Schema({ child: childSchema, children: [childSchema] }));
+    for (const path of ['child', 'children']) {
+      const middleware = Parent.schema.path(path).Constructor._middleware;
+      const saveHooks = middleware._pres.get('save') || [];
+      assert.ok(saveHooks.some(hook => hook.fn.name === 'trackTransactionPreSave'));
+      assert.ok(!saveHooks.some(hook => hook.fn.name.startsWith('saveSubdocs')));
+      assert.ok(!saveHooks.some(hook => hook.fn.name.startsWith('shardingPlugin')));
+      assert.ok(!middleware.hasHooks('init'));
+    }
+
+    const Root = m.model('Root', new m.Schema({ name: String }, { shardKey: { name: 1 } }));
+    const rootSaveHooks = Root._middleware._pres.get('save') || [];
+    assert.ok(rootSaveHooks.some(hook => hook.fn.name === 'saveSubdocsPreSave'));
+    assert.ok(rootSaveHooks.some(hook => hook.fn.name === 'shardingPluginPreSave'));
+    assert.ok(rootSaveHooks.some(hook => hook.fn.name === 'trackTransactionPreSave'));
+    assert.ok(Root._middleware.hasHooks('init'));
+  });
+
+  for (const rootFirst of [false, true]) {
+    it(`filters root-only middleware on shared schemas when compiling ${rootFirst ? 'root first' : 'child first'}`, function() {
+      const m = new Mongoose();
+      const sharedSchema = new m.Schema({ name: String }, { shardKey: { name: 1 } });
+      const pluginCalls = [];
+      m.plugin(schema => pluginCalls.push(schema));
+
+      let Root;
+      let Parent;
+      const compileRoot = () => { Root = m.model('SharedRoot', sharedSchema); };
+      const compileParent = () => {
+        Parent = m.model('SharedParent', new m.Schema({ child: sharedSchema, children: [sharedSchema] }));
+      };
+
+      if (rootFirst) {
+        compileRoot();
+        compileParent();
+      } else {
+        compileParent();
+        compileRoot();
+      }
+
+      assert.equal(pluginCalls.filter(schema => schema === sharedSchema).length, 1);
+      const rootSaveHooks = Root._middleware._pres.get('save') || [];
+      assert.equal(rootSaveHooks.filter(hook => hook.fn.name === 'saveSubdocsPreSave').length, 1);
+      assert.equal(rootSaveHooks.filter(hook => hook.fn.name === 'shardingPluginPreSave').length, 1);
+      assert.ok(Root._middleware.hasHooks('init'));
+
+      for (const path of ['child', 'children']) {
+        const middleware = Parent.schema.path(path).Constructor._middleware;
+        const saveHooks = middleware._pres.get('save') || [];
+        assert.ok(!saveHooks.some(hook => hook.fn.name.startsWith('saveSubdocs')));
+        assert.ok(!saveHooks.some(hook => hook.fn.name.startsWith('shardingPlugin')));
+        assert.ok(!middleware.hasHooks('init'));
+      }
+    });
+  }
+
+  it('does not apply sharding or saveSubdocs to document array discriminators', function() {
+    const m = new Mongoose();
+    m.set('applyPluginsToDiscriminators', true);
+    const childSchema = new m.Schema({ kind: String }, { discriminatorKey: 'kind', shardKey: { kind: 1 } });
+    const parentSchema = new m.Schema({ children: [childSchema] });
+    parentSchema.path('children').discriminator('Special', new m.Schema({ extra: String }), { clone: false });
+
+    const Parent = m.model('Parent', parentSchema);
+    const middleware = Parent.schema.path('children').Constructor.discriminators.Special._middleware;
+
+    assert.ok(!middleware.hasHooks('init'));
+    const saveHooks = middleware._pres.get('save') || [];
+    assert.ok(saveHooks.some(hook => hook.fn.name === 'trackTransactionPreSave'));
+    assert.ok(!saveHooks.some(hook => hook.fn.name.startsWith('saveSubdocs')));
+    assert.ok(!saveHooks.some(hook => hook.fn.name.startsWith('shardingPlugin')));
+  });
+
   it('global plugins recompile schemas (gh-7572)', function() {
     function helloPlugin(schema) {
       schema.virtual('greeting').get(() => 'hello');
@@ -453,7 +608,7 @@ describe('mongoose module:', function() {
 
     const M = mongoose.model('gh6760', schema);
 
-    const doc = new M({ testId: 'length12str0', testNum: 123, mixed: {} });
+    const doc = new M({ testId: '0'.repeat(24), testNum: 123, mixed: {} });
 
     assert.ok(doc.testId instanceof mongoose.Types.ObjectId);
     assert.ok(doc.testNum instanceof mongoose.Types.Decimal128);
@@ -726,11 +881,11 @@ describe('mongoose module:', function() {
   });
 
   it('isValidObjectId (gh-3823)', function() {
-    assert.ok(mongoose.isValidObjectId('0123456789ab'));
+    assert.ok(!mongoose.isValidObjectId('0123456789ab'));
     assert.ok(mongoose.isValidObjectId('5f5c2d56f6e911019ec2acdc'));
     assert.ok(mongoose.isValidObjectId('608DE01F32B6A93BBA314159'));
     assert.ok(mongoose.isValidObjectId(new mongoose.Types.ObjectId()));
-    assert.ok(mongoose.isValidObjectId(6));
+    assert.ok(!mongoose.isValidObjectId(6));
     assert.ok(!mongoose.isValidObjectId({ test: 42 }));
   });
 
@@ -907,7 +1062,7 @@ describe('mongoose module:', function() {
       const goodIdString = '1'.repeat(24);
       assert.deepStrictEqual(mongoose.isValidObjectId(goodIdString), true);
       const goodIdString2 = '1'.repeat(12);
-      assert.deepStrictEqual(mongoose.isValidObjectId(goodIdString2), true);
+      assert.deepStrictEqual(mongoose.isValidObjectId(goodIdString2), false);
     });
     it('Allows a syncIndexes shorthand mongoose.syncIndexes (gh-10893)', async function() {
       const m = new mongoose.Mongoose();
@@ -1146,6 +1301,54 @@ describe('mongoose module:', function() {
         assert.ok(err.errors['invalid'] instanceof SetOptionError.SetOptionInnerError);
         assert.strictEqual(err.message, 'invalid: "invalid" is not a valid option to set');
       }
+    });
+  });
+
+  describe('createInitialConnection (gh-8302)', function() {
+    let m;
+
+    beforeEach(function() {
+      m = new mongoose.Mongoose();
+    });
+
+    afterEach(async function() {
+      await m.disconnect();
+    });
+
+    it('should delete existing connection when setting createInitialConnection to false', function() {
+      assert.ok(m.connection);
+      m.set('createInitialConnection', false);
+      assert.strictEqual(m.connection, undefined);
+    });
+
+    it('should create connection when createConnection is called', function() {
+      m.set('createInitialConnection', false);
+      const conn = m.createConnection();
+      assert.equal(conn, m.connection);
+    });
+
+    it('should create a new connection automatically when connect() is called if no existing default connection', async function() {
+      assert.ok(m.connection);
+      m.set('createInitialConnection', false);
+      assert.strictEqual(m.connection, undefined);
+
+      await m.connect(start.uri);
+      assert.ok(m.connection);
+    });
+
+    it('should not delete default connection if it has models', async function() {
+      assert.ok(m.connection);
+      m.model('Test', new m.Schema({ name: String }));
+      m.set('createInitialConnection', false);
+      assert.ok(m.connection);
+    });
+
+    it('should not delete default connection if it is connected', async function() {
+      assert.ok(m.connection);
+      await m.connect(start.uri);
+      m.set('createInitialConnection', false);
+      assert.ok(m.connection);
+      assert.equal(m.connection.readyState, 1);
     });
   });
 });

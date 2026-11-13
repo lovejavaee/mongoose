@@ -8,7 +8,7 @@ const start = require('./common');
 
 const MongooseBuffer = require('../lib/types/buffer');
 const ObjectId = require('../lib/types/objectid');
-const StateMachine = require('../lib/statemachine');
+const StateMachine = require('../lib/stateMachine');
 const assert = require('assert');
 const utils = require('../lib/utils');
 
@@ -121,29 +121,6 @@ describe('utils', function() {
     });
   });
 
-  it('utils.options', function() {
-    const o = { a: 1, b: 2, c: 3, 0: 'zero1' };
-    const defaults = { b: 10, d: 20, 0: 'zero2' };
-    const result = utils.options(defaults, o);
-    assert.equal(result.a, 1);
-    assert.equal(result.b, 2);
-    assert.equal(result.c, 3);
-    assert.equal(result.d, 20);
-    assert.deepEqual(o.d, result.d);
-    assert.equal(result['0'], 'zero1');
-
-    const result2 = utils.options(defaults);
-    assert.equal(result2.b, 10);
-    assert.equal(result2.d, 20);
-    assert.equal(result2['0'], 'zero2');
-
-    // same properties/vals
-    assert.deepEqual(defaults, result2);
-
-    // same object
-    assert.notEqual(defaults, result2);
-  });
-
   it('deepEquals on ObjectIds', function() {
     const s = (new ObjectId()).toString();
 
@@ -165,6 +142,22 @@ describe('utils', function() {
     assert.ok(!utils.deepEqual(a, b));
 
     b = new Map([['b', 2], ['a', 1]]);
+    assert.ok(!utils.deepEqual(a, b));
+  });
+
+  it('deepEquals on sets', function() {
+    const a = new Set([1, 2, 3]);
+    let b = new Set([1, 2, 3]);
+
+    assert.ok(utils.deepEqual(a, b));
+
+    b = new Set([1, 2, 4]);
+    assert.ok(!utils.deepEqual(a, b));
+
+    b = new Set([1, 2]);
+    assert.ok(!utils.deepEqual(a, b));
+
+    b = new Set([1, 2, 3, 4]);
     assert.ok(!utils.deepEqual(a, b));
   });
 
@@ -277,6 +270,36 @@ describe('utils', function() {
       assert.ok(to.toMethod === To.prototype.toMethod);
       assert.equal(to.fomMethod, From.prototype.fomMethod);
     });
+
+    it('should skip schema merge when isDiscriminatorSchemaMerge is true (gh-9534)', function() {
+      const to = {
+        key: { $isSingleNested: true, existingProp: 1 }
+      };
+      const from = {
+        key: { $isMongooseDocumentArray: true, newProp: 2 }
+      };
+
+      // When isDiscriminatorSchemaMerge is true, merge SHOULD skip
+      // conflicting single-nested vs document-array paths
+      utils.merge(to, from, { isDiscriminatorSchemaMerge: true });
+
+      assert.strictEqual(to.key.newProp, undefined);
+    });
+
+    it('should not skip schema merge when isDiscriminatorSchemaMerge is false (gh-9534)', function() {
+      const to = {
+        key: { $isSingleNested: true, existingProp: 1 }
+      };
+      const from = {
+        key: { $isMongooseDocumentArray: true, newProp: 2 }
+      };
+
+      // When isDiscriminatorSchemaMerge is false, merge should NOT skip
+      // the key even if from/to have $isMongooseDocumentArray/$isSingleNested
+      utils.merge(to, from, { isDiscriminatorSchemaMerge: false });
+
+      assert.strictEqual(to.key.newProp, 2);
+    });
   });
 
   describe('mergeClone', function() {
@@ -302,6 +325,28 @@ describe('utils', function() {
       utils.mergeClone(to, from);
 
       assert.ok(to.val instanceof Date);
+    });
+
+    it('does not merge into inherited properties like toString', function() {
+      const from = JSON.parse('{"toString":{"call":1,"polluted":"yes"},"valueOf":{"call":{"polluted":"yes"}}}');
+      const to = {};
+
+      try {
+        utils.mergeClone(to, from);
+
+        assert.strictEqual(typeof Object.prototype.toString.call, 'function');
+        assert.strictEqual(Object.prototype.toString.polluted, undefined);
+        assert.strictEqual(Function.prototype.call.polluted, undefined);
+        // Keys that would shadow inherited properties are ignored
+        assert.ok(!Object.hasOwn(to, 'toString'));
+        assert.ok(!Object.hasOwn(to, 'valueOf'));
+      } finally {
+      // Clean up so a failure here doesn't break subsequent tests
+        for (const fn of [Object.prototype.toString, Object.prototype.valueOf, Function.prototype.call, Array.prototype.push]) {
+          delete fn.call;
+          delete fn.polluted;
+        }
+      }
     });
   });
   describe('errorToPOJO(...)', () => {
@@ -345,6 +390,55 @@ describe('utils', function() {
       assert.equal(pojoError.message, 'Something bad happened.');
       assert.ok(pojoError.stack);
       assert.deepEqual(pojoError.metadata, { hello: 'world' });
+    });
+  });
+
+  describe('toCollectionName', function() {
+    it('returns the same name for system.profile', function() {
+      assert.equal(utils.toCollectionName('system.profile'), 'system.profile');
+    });
+
+    it('returns the same name for system.indexes', function() {
+      assert.equal(utils.toCollectionName('system.indexes'), 'system.indexes');
+    });
+
+    it('throws an error when name is not a string', function() {
+      assert.throws(() => {
+        utils.toCollectionName(123, () => {});
+      }, /Collection name must be a string/);
+    });
+
+    it('throws an error when name is an empty string', function() {
+      assert.throws(() => {
+        utils.toCollectionName('', () => {});
+      }, /Collection name cannot be empty/);
+    });
+
+    it('uses the pluralize function when provided', function() {
+      const pluralize = (name) => name + 's';
+      assert.equal(utils.toCollectionName('test', pluralize), 'tests');
+    });
+  });
+
+  describe('null checks', function() {
+    // regression test: previously these would crash with "Cannot read property 'length' of null"
+    // or similar errors. now they should fail gracefully.
+    it('utils.last() handles null/undefined inputs', function() {
+      assert.strictEqual(utils.last(null), undefined);
+      assert.strictEqual(utils.last(undefined), undefined);
+    });
+
+    // merge shouldn't blow up if the source object is missing
+    it('utils.merge() returns target if source is null/undefined', function() {
+      const target = { foo: 'bar' };
+      assert.strictEqual(utils.merge(target, null), target);
+      assert.strictEqual(utils.merge(target, undefined), target);
+    });
+
+    // just return empty array if we can't get values from nothing
+    it('utils.object.vals() returns empty array for null/undefined', function() {
+      assert.deepStrictEqual(utils.object.vals(null), []);
+      assert.deepStrictEqual(utils.object.vals(undefined), []);
     });
   });
 });

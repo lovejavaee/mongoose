@@ -40,16 +40,18 @@ describe('Tutorial: findOneAndUpdate()', function() {
       age: Number
     }));
 
-    await Character.create({ name: 'Jean-Luc Picard' });
+    const _id = new mongoose.Types.ObjectId('0'.repeat(24));
+    let doc = await Character.create({ _id, name: 'Jean-Luc Picard' });
+    doc; // { name: 'Jean-Luc Picard', _id: ObjectId('000000000000000000000000') }
 
     const filter = { name: 'Jean-Luc Picard' };
     const update = { age: 59 };
 
-    // `doc` is the document _before_ `update` was applied
-    let doc = await Character.findOneAndUpdate(filter, update);
-    doc.name; // 'Jean-Luc Picard'
-    doc.age; // undefined
+    // The result of `findOneAndUpdate()` is the document _before_ `update` was applied
+    doc = await Character.findOneAndUpdate(filter, update);
+    doc; // { name: 'Jean-Luc Picard', _id: ObjectId('000000000000000000000000') }
     // acquit:ignore:start
+    assert.equal(doc._id.toHexString(), _id.toHexString());
     assert.equal(doc.name, 'Jean-Luc Picard');
     assert.equal(doc.age, undefined);
     // acquit:ignore:end
@@ -62,14 +64,14 @@ describe('Tutorial: findOneAndUpdate()', function() {
     // acquit:ignore:end
   });
 
-  it('new option', async function() {
+  it('returnDocument option', async function() {
     const filter = { name: 'Jean-Luc Picard' };
     const update = { age: 59 };
 
     // `doc` is the document _after_ `update` was applied because of
-    // `new: true`
+    // `returnDocument: 'after'`
     const doc = await Character.findOneAndUpdate(filter, update, {
-      new: true
+      returnDocument: 'after'
     });
     doc.name; // 'Jean-Luc Picard'
     doc.age; // 59
@@ -79,14 +81,17 @@ describe('Tutorial: findOneAndUpdate()', function() {
     // acquit:ignore:end
   });
 
-  it('returnOriginal option', async function() {
+  it('strips undefined from updates', async function() {
     const filter = { name: 'Jean-Luc Picard' };
-    const update = { age: 59 };
+    const update = {
+      $set: {
+        name: undefined,
+        age: 59
+      }
+    };
 
-    // `doc` is the document _after_ `update` was applied because of
-    // `returnOriginal: false`
     const doc = await Character.findOneAndUpdate(filter, update, {
-      returnOriginal: false
+      returnDocument: 'after'
     });
     doc.name; // 'Jean-Luc Picard'
     doc.age; // 59
@@ -139,7 +144,7 @@ describe('Tutorial: findOneAndUpdate()', function() {
     // acquit:ignore:end
   });
 
-  it('rawResult', async function() {
+  it('includeResultMetadata', async function() {
     const filter = { name: 'Will Riker' };
     const update = { age: 29 };
 
@@ -151,7 +156,8 @@ describe('Tutorial: findOneAndUpdate()', function() {
     const res = await Character.findOneAndUpdate(filter, update, {
       new: true,
       upsert: true,
-      rawResult: true // Return the raw result from the MongoDB driver
+      // Return additional properties about the operation, not just the document
+      includeResultMetadata: true
     });
 
     res.value instanceof Character; // true

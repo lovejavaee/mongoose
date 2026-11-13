@@ -1,8 +1,17 @@
-import { Schema, model, Model, Document, Types } from 'mongoose';
+import {
+  Schema,
+  model,
+  Model,
+  Document,
+  Types,
+  HydratedArraySubdocument,
+  HydratedSingleSubdocument
+} from 'mongoose';
+import { expect } from 'tstyche';
 
-const childSchema: Schema = new Schema({ name: String });
+const childSchema = new Schema({ name: String });
 
-const schema: Schema = new Schema({
+const schema = new Schema({
   child1: childSchema,
   child2: {
     type: childSchema,
@@ -15,7 +24,7 @@ const schema: Schema = new Schema({
   }]
 });
 
-interface ITest extends Document {
+interface ITest {
   child1: { _id: Types.ObjectId, name: string },
   child2: { name: string }
 }
@@ -107,4 +116,36 @@ function gh13040(): void {
   user.products.forEach(product => {
     product.ownerDocument();
   });
+}
+
+function gh14601() {
+  interface ISub {
+    field1: string;
+  }
+  interface IMain {
+    f1: string;
+    f2: HydratedSingleSubdocument<ISub>;
+    f3: HydratedArraySubdocument<ISub>[];
+  }
+
+  const subSchema = new Schema({ field1: String }, { _id: false });
+
+  const mainSchema = new Schema({
+    f1: String,
+    f2: { type: subSchema },
+    f3: { type: [subSchema] }
+  });
+  const MainModel = model<IMain>('Main', mainSchema);
+
+  const item = new MainModel({
+    f1: 'test',
+    f2: { field1: 'test' },
+    f3: [{ field1: 'test' }]
+  });
+
+  const obj = item.toObject();
+  expect(obj).type.toBeAssignableTo<IMain>();
+
+  const obj2 = item.f2.toObject();
+  expect(obj2).type.toBeAssignableTo<ISub>();
 }

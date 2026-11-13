@@ -9,7 +9,7 @@ try {
     process.exit(-1);
   }
 }
-const axios = require('axios');
+
 const fs = require('fs');
 const mongoose = require('../');
 
@@ -31,28 +31,9 @@ async function run() {
     logo: String
   }), 'Subscriber');
 
-  const Job = mongoose.model('Job', mongoose.Schema({
-    logo: String,
-    company: String,
-    title: String,
-    location: {
-      type: String,
-      required: true
-    },
-    description: {
-      type: String,
-      required: true
-    },
-    url: {
-      type: String,
-      required: true
-    }
-  }), 'Job');
-
   const OpenCollectiveSponsor = mongoose.model('OpenCollectiveSponsor', mongoose.Schema({
     openCollectiveId: {
-      type: Number,
-      required: true
+      type: Number
     },
     website: {
       type: String,
@@ -69,7 +50,7 @@ async function run() {
 
   try {
     fs.mkdirSync(`${docsDir}/data`);
-  } catch (err) {}
+  } catch {}
 
   const subscribers = await Subscriber.
     find({ companyName: { $exists: true }, description: { $exists: true }, logo: { $exists: true } }).
@@ -77,15 +58,13 @@ async function run() {
     select({ companyName: 1, description: 1, url: 1, logo: 1 });
   fs.writeFileSync(`${docsDir}/data/sponsors.json`, JSON.stringify(subscribers, null, '  '));
 
-  const jobs = await Job.find().select({ logo: 1, company: 1, title: 1, location: 1, description: 1, url: 1 });
-  fs.writeFileSync(`${docsDir}/data/jobs.json`, JSON.stringify(jobs, null, '  '));
-
-  const opencollectiveSponsors = await axios.get('https://opencollective.com/mongoose/members.json').
-    then(res => res.data).
-    then(sponsors => {
-      return sponsors.filter(result => result.tier == 'sponsor' && result.isActive);
-    }).
-    catch(() => null);
+  const opencollectiveSponsors = await fetch('https://opencollective.com/mongoose/members.json')
+    .then(res => res.json())
+    .then(res => res.filter(result => {
+      // Preserve the rates for sponsors who joined before June 2026.
+      return result.tier === 'sponsor' && result.isActive &&
+        (result.createdAt < '2026-06-01' || result.lastTransactionAmount >= 375);
+    }));
 
   for (const sponsor of opencollectiveSponsors) {
     const override = await OpenCollectiveSponsor.findOne({ openCollectiveId: sponsor['MemberId'] });

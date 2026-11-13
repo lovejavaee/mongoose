@@ -4,6 +4,7 @@
  * Test dependencies.
  */
 
+const sinon = require('sinon');
 const start = require('./common');
 
 const assert = require('assert');
@@ -309,7 +310,6 @@ describe('model: findOneAndReplace:', function() {
     const schema = new Schema({ name: String, age: { type: Number, select: false } });
     const Model = db.model('Test', schema);
 
-
     const doc = await Model.findOneAndReplace({}, { name: 'Jean-Luc Picard', age: 59 }, {
       upsert: true,
       returnOriginal: false
@@ -354,7 +354,7 @@ describe('model: findOneAndReplace:', function() {
     const testSchema = new Schema({
       name: {
         type: String,
-        required: true // you had a typo here
+        required: true
       }
     });
     const Test = db.model('Test', testSchema);
@@ -370,5 +370,110 @@ describe('model: findOneAndReplace:', function() {
 
     const doc = await Test.findById(entry);
     assert.strictEqual(doc.name, undefined);
+  });
+
+  it('respects query-level strict option (gh-13507)', async function() {
+    const testSchema = new Schema({
+      name: {
+        type: String,
+        required: true
+      }
+    });
+    const Test = db.model('Test', testSchema);
+
+    let err = await Test.findOneAndReplace(
+      { name: 'Test' },
+      { name: 'Bar', notInSchema: 'foo' },
+      { strict: 'throw' }
+    ).then(() => null, err => err);
+
+    assert.ok(err);
+    assert.ok(err.errors['notInSchema']);
+    assert.equal(err.errors['notInSchema'].name, 'StrictModeError');
+
+    err = await Test.findOneAndReplace(
+      { name: 'Test' },
+      { name: 'Bar', notInSchema: 'foo' },
+      { strict: 'throw', runValidators: true }
+    ).then(() => null, err => err);
+
+    assert.ok(err);
+    assert.ok(err.errors['notInSchema']);
+    assert.equal(err.errors['notInSchema'].name, 'StrictModeError');
+  });
+
+  it('respects schema-level strict option (gh-13507)', async function() {
+    const testSchema = new Schema({
+      name: {
+        type: String,
+        required: true
+      }
+    }, { strict: 'throw' });
+    const Test = db.model('Test', testSchema);
+
+    let err = await Test.findOneAndReplace(
+      { name: 'Test' },
+      { name: 'Bar', notInSchema: 'foo' },
+      {}
+    ).then(() => null, err => err);
+
+    assert.ok(err);
+    assert.ok(err.errors['notInSchema']);
+    assert.equal(err.errors['notInSchema'].name, 'StrictModeError');
+
+    err = await Test.findOneAndReplace(
+      { name: 'Test' },
+      { name: 'Bar', notInSchema: 'foo' },
+      { runValidators: true }
+    ).then(() => null, err => err);
+
+    assert.ok(err);
+    assert.ok(err.errors['notInSchema']);
+    assert.equal(err.errors['notInSchema'].name, 'StrictModeError');
+  });
+
+  it('does not send overwrite or timestamps option to MongoDB', async function() {
+    const testSchema = new Schema({
+      name: String
+    });
+    const Test = db.model('Test', testSchema);
+
+    sinon.stub(Test.collection, 'findOneAndReplace').callsFake(() => Promise.resolve({}));
+
+    await Test.findOneAndReplace(
+      { name: 'Test' },
+      {},
+      { timestamps: true }
+    );
+
+    assert.ok(Test.collection.findOneAndReplace.calledOnce);
+    const opts = Test.collection.findOneAndReplace.getCalls()[0].args[2];
+    assert.ok(!Object.keys(opts).includes('overwrite'));
+    assert.ok(!Object.keys(opts).includes('timestamps'));
+  });
+
+  it('supports the `includeResultMetadata` option (gh-13539)', async function() {
+    const testSchema = new mongoose.Schema({
+      name: String
+    });
+    const Test = db.model('Test', testSchema);
+    await Test.create({
+      name: 'Test'
+    });
+    const doc = await Test.findOneAndReplace(
+      { name: 'Test' },
+      { name: 'Test Testerson' },
+      { new: true, upsert: true, includeResultMetadata: false }
+    );
+    assert.equal(doc.ok, undefined);
+    assert.equal(doc.name, 'Test Testerson');
+
+    const data = await Test.findOneAndReplace(
+      { name: 'Test Testerson' },
+      { name: 'Test' },
+      { new: true, upsert: true, includeResultMetadata: true }
+    );
+    assert(data.ok);
+    assert.equal(data.value.name, 'Test');
   });
 });

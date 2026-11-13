@@ -1,6 +1,6 @@
 # Change Streams
 
-[Change streams](https://www.mongodb.com/developer/languages/javascript/nodejs-change-streams-triggers/) let you listen for updates to documents in a given model's collection, or even documents in an entire database.
+[Change streams](https://www.mongodb.com/docs/drivers/node/current/monitoring-and-logging/change-streams/) let you listen for updates to documents in a given model's collection, or even documents in an entire database.
 Unlike [middleware](middleware.html), change streams are a MongoDB server construct, which means they pick up changes from anywhere.
 Even if you update a document from a MongoDB GUI, your Mongoose change stream will be notified.
 
@@ -21,7 +21,7 @@ await Person.create({ name: 'Axl Rose' });
 
 The above script will print output that looks like:
 
-```no-highlight
+```javascript
 {
   _id: {
     _data: '8262408DAC000000012B022C0100296E5A10042890851837DB4792BE6B235E8B85489F46645F6964006462408DAC6F5C42FF5EE087A20004'

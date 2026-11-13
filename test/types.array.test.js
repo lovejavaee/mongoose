@@ -70,7 +70,7 @@ describe('types array', function() {
 
       try {
         b.hasAtomics;
-      } catch (_) {
+      } catch {
         threw = true;
       }
 
@@ -79,8 +79,8 @@ describe('types array', function() {
       const a = new MongooseArray([67, 8]).filter(Boolean);
       try {
         a.push(3, 4);
-      } catch (_) {
-        console.error(_);
+      } catch (err) {
+        console.error(err);
         threw = true;
       }
 
@@ -113,6 +113,34 @@ describe('types array', function() {
       assert.equal(user.pets.indexOf(tobi._id), 0);
       assert.equal(user.pets.indexOf(loki._id), 1);
       assert.equal(user.pets.indexOf(jane._id), 2);
+    });
+
+    it('matches dates by value', function() {
+      const Test = db.model('Test', new Schema({ dates: [Date], mixed: [] }));
+      const doc = new Test({
+        dates: [new Date('2026-01-01'), new Date('2026-02-01')],
+        mixed: [new Date('2026-01-01').valueOf()]
+      });
+
+      assert.equal(doc.dates.indexOf(new Date('2026-01-01')), 0);
+      assert.equal(doc.dates.indexOf(new Date('2026-02-01')), 1);
+      assert.equal(doc.dates.indexOf(new Date('2026-03-01')), -1);
+      assert.equal(doc.dates.indexOf(new Date('2026-01-01'), 1), -1);
+      assert.equal(doc.dates.includes(new Date('2026-02-01')), true);
+      assert.equal(doc.mixed.indexOf(new Date('2026-01-01')), -1);
+    });
+
+    it('matches UUIDs by value', function() {
+      const Test = db.model('Test', new Schema({ ids: ['UUID'] }));
+      const uuid1 = '0a1b2c3d-0000-4000-8000-000000000001';
+      const uuid2 = '0a1b2c3d-0000-4000-8000-000000000002';
+      const doc = new Test({ ids: [uuid1, uuid2] });
+
+      assert.equal(doc.ids.indexOf(new mongoose.Types.UUID(uuid1)), 0);
+      assert.equal(doc.ids.indexOf(new mongoose.Types.UUID(uuid2)), 1);
+      assert.equal(doc.ids.indexOf(new mongoose.Types.UUID(uuid1), 1), -1);
+      assert.equal(doc.ids.indexOf(uuid2), 1);
+      assert.equal(doc.ids.includes(new mongoose.Types.UUID(uuid2)), true);
     });
   });
 
@@ -281,6 +309,61 @@ describe('types array', function() {
       assert.strictEqual('two', doc.arr[1]);
       assert.strictEqual('three', doc.arr[2]);
 
+    });
+
+    it('keeps earlier pushed values when push() is called again with $each (gh-16618)', async function() {
+      const Test = db.model('Test', Schema({ nums: [Number] }));
+
+      const doc = await Test.create({ nums: [1, 2] });
+      doc.nums.push(3);
+      doc.nums.push({ $each: [4] });
+      doc.nums.push({ $each: [5, 6] });
+      assert.deepStrictEqual(doc.nums.$__getAtomics(), [['$push', { $each: [3, 4, 5, 6] }]]);
+      await doc.save();
+
+      const raw = await Test.collection.findOne({ _id: doc._id });
+      assert.deepStrictEqual(raw.nums, [1, 2, 3, 4, 5, 6]);
+    });
+
+    it('keeps earlier pushed subdocs when push() is called again with $each (gh-16618)', async function() {
+      const Test = db.model('Test', Schema({ docs: [{ n: Number }] }));
+
+      const doc = await Test.create({ docs: [{ n: 1 }, { n: 2 }] });
+      doc.docs.push({ n: 3 });
+      doc.docs.push({ $each: [{ n: 4 }] });
+      await doc.save();
+
+      const raw = await Test.collection.findOne({ _id: doc._id });
+      assert.deepStrictEqual(raw.docs.map(d => d.n), [1, 2, 3, 4]);
+    });
+
+    it('saves the whole array when two pushes cannot share one $push (gh-16618)', async function() {
+      const Test = db.model('Test', Schema({ nums: [Number] }));
+
+      const doc = await Test.create({ nums: [1, 2] });
+      doc.nums.push({ $each: [-1], $position: 0 });
+      doc.nums.push({ $each: [0], $position: 0 });
+      assert.deepStrictEqual(doc.nums.$__getAtomics(), [['$set', [0, -1, 1, 2]]]);
+      await doc.save();
+
+      let raw = await Test.collection.findOne({ _id: doc._id });
+      assert.deepStrictEqual(raw.nums, [0, -1, 1, 2]);
+
+      doc.nums.push({ $each: [-2], $position: 0 });
+      doc.nums.push(3);
+      assert.deepStrictEqual(doc.nums.$__getAtomics(), [['$set', [-2, 0, -1, 1, 2, 3]]]);
+      await doc.save();
+
+      raw = await Test.collection.findOne({ _id: doc._id });
+      assert.deepStrictEqual(raw.nums, [-2, 0, -1, 1, 2, 3]);
+
+      doc.nums.push(4);
+      doc.nums.push({ $each: [5], $slice: 10 });
+      assert.deepStrictEqual(doc.nums.$__getAtomics(), [['$set', [-2, 0, -1, 1, 2, 3, 4, 5]]]);
+      await doc.save();
+
+      raw = await Test.collection.findOne({ _id: doc._id });
+      assert.deepStrictEqual(raw.nums, [-2, 0, -1, 1, 2, 3, 4, 5]);
     });
   });
 
@@ -597,6 +680,69 @@ describe('types array', function() {
       doc.a.pull(cat.id);
       assert.equal(doc.a.length, 0);
 
+      assert.ok(doc.getChanges().$pullAll.a);
+    });
+
+    it('removes dates that are equal but not the same instance', async function() {
+      const Test = db.model('Test', new Schema({ dates: [Date] }));
+      const { _id } = await Test.create({
+        dates: [new Date('2026-01-01'), new Date('2026-02-01')]
+      });
+
+      const doc = await Test.findById(_id);
+      doc.dates.pull(new Date('2026-01-01'));
+      assert.deepStrictEqual(doc.dates.map(d => d.toISOString()), ['2026-02-01T00:00:00.000Z']);
+
+      // Mixing pull() and push() saves the whole array with $set, so a date
+      // that pull() left behind would be written back.
+      doc.dates.push(new Date('2026-03-01'));
+      await doc.save();
+
+      const { dates } = await Test.findById(_id).lean();
+      assert.deepStrictEqual(dates.map(d => d.toISOString()), [
+        '2026-02-01T00:00:00.000Z',
+        '2026-03-01T00:00:00.000Z'
+      ]);
+    });
+
+    it('removes UUIDs that are equal but not the same instance', async function() {
+      const Test = db.model('Test', new Schema({ ids: ['UUID'] }));
+      const uuid1 = '0a1b2c3d-0000-4000-8000-000000000001';
+      const uuid2 = '0a1b2c3d-0000-4000-8000-000000000002';
+      const uuid3 = '0a1b2c3d-0000-4000-8000-000000000003';
+      const { _id } = await Test.create({ ids: [uuid1, uuid2] });
+
+      const doc = await Test.findById(_id);
+      doc.ids.pull(uuid1);
+      assert.deepStrictEqual(doc.ids.map(id => id.toString()), [uuid2]);
+
+      // Mixing pull() and push() saves the whole array with $set, so a UUID
+      // that pull() left behind would be written back.
+      doc.ids.push(uuid3);
+      await doc.save();
+
+      const { ids } = await Test.findById(_id);
+      assert.deepStrictEqual(ids.map(id => id.toString()), [uuid2, uuid3]);
+    });
+
+    it('registers $pull atomic if pulling from middle (gh-14502)', async function() {
+      const schema = new Schema({
+        a: [{ type: Schema.ObjectId, ref: 'Cat' }]
+      });
+      const A = db.model('Test', schema);
+
+      const oid1 = new mongoose.Types.ObjectId();
+      const oid2 = new mongoose.Types.ObjectId();
+      const oid3 = new mongoose.Types.ObjectId();
+      const a = new A({ a: [oid1, oid2, oid3] });
+      await a.save();
+
+      const doc = await A.findById(a);
+      assert.equal(doc.a.length, 3);
+      doc.a.pull(oid2);
+      assert.equal(doc.a.length, 2);
+
+      assert.ok(doc.getChanges().$pullAll.a);
     });
 
     it('handles pulling with no _id (gh-3341)', async function() {
@@ -1010,6 +1156,31 @@ describe('types array', function() {
       assert.strictEqual('one', doc.arr[0]);
       assert.strictEqual('two', doc.arr[1]);
       assert.strictEqual('three', doc.arr[2]);
+    });
+
+    it('skips UUIDs that are already in the array', function() {
+      const Test = db.model('Test', new Schema({ ids: ['UUID'] }));
+      const uuid1 = '0a1b2c3d-0000-4000-8000-000000000001';
+      const uuid2 = '0a1b2c3d-0000-4000-8000-000000000002';
+      const uuid3 = '0a1b2c3d-0000-4000-8000-000000000003';
+      const doc = new Test({ ids: [uuid1, uuid2] });
+
+      const added = doc.ids.addToSet(uuid1, new mongoose.Types.UUID(uuid2), uuid3);
+      assert.deepStrictEqual(added.map(id => id.toString()), [uuid3]);
+      assert.deepStrictEqual(doc.ids.map(id => id.toString()), [uuid1, uuid2, uuid3]);
+    });
+
+    it('works with BigInts', async function() {
+      const Test = db.model('Test', new Schema({ nums: [BigInt] }));
+      const doc = await Test.create({ nums: [1n, 2n] });
+
+      const added = doc.nums.addToSet(2n, 3n);
+      assert.deepStrictEqual(added, [3n]);
+      assert.deepStrictEqual(doc.nums.toObject(), [1n, 2n, 3n]);
+
+      await doc.save();
+      const fromDb = await Test.findById(doc._id).orFail();
+      assert.deepStrictEqual(fromDb.nums.toObject(), [1n, 2n, 3n]);
     });
   });
 
@@ -1672,7 +1843,7 @@ describe('types array', function() {
         arr.num1.push({ x: 1 });
         arr.num1.push(9);
         arr.num1.push('woah');
-      } catch (err) {
+      } catch {
         threw1 = true;
       }
 
@@ -1682,7 +1853,7 @@ describe('types array', function() {
         arr.num2.push({ x: 1 });
         arr.num2.push(9);
         arr.num2.push('woah');
-      } catch (err) {
+      } catch {
         threw2 = true;
       }
 
@@ -1898,5 +2069,54 @@ describe('types array', function() {
     assert.ifError(user.validateSync());
 
     m.Schema.Types.Array.options.castNonArrays = true;
+  });
+
+  it('supports setting nested arrays directly (gh-13372)', function() {
+    const Test = db.model('Test', new Schema({ intArr: [[Number]] }));
+
+    const intArr = [[1, 2], [3, 4]];
+    const doc = Test.hydrate({ intArr });
+
+    doc.intArr[0][0] = 2;
+    doc.intArr[1][1] = 5;
+    assert.deepStrictEqual(doc.getChanges(), {
+      $set: {
+        'intArr.0.0': 2,
+        'intArr.1.1': 5
+      }
+    });
+  });
+
+  it('calls array setters (gh-11380)', function() {
+    let called = 0;
+    const Test = db.model('Test', new Schema({
+      intArr: [{
+        type: Number,
+        set: v => {
+          ++called;
+          return Math.floor(v);
+        }
+      }]
+    }));
+
+    assert.equal(called, 0);
+    const doc = new Test({ intArr: [3.14] });
+    assert.deepStrictEqual(doc.intArr, [3]);
+    assert.equal(called, 1);
+
+    doc.intArr.push(2.718);
+    assert.deepStrictEqual(doc.intArr, [3, 2]);
+    assert.equal(called, 2);
+  });
+
+  it('does not mutate SchemaArray setters order when casting an array-valued query filter (gh-16372)', function() {
+    const schema = new Schema({ nums: { type: [Number], set: v => v } });
+    schema.path('nums').set(v => v);
+    const originalOrder = schema.path('nums').setters.slice();
+    const M = db.model('Test', schema);
+
+    M.find({ nums: [1, 2, 3] }).cast(M);
+
+    assert.deepStrictEqual(schema.path('nums').setters, originalOrder);
   });
 });

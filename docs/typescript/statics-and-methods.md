@@ -1,46 +1,37 @@
-# Statics and Methods in TypeScript
+# Statics in TypeScript
 
-You can define instance methods and static functions on Mongoose models.
-With a little extra configuration, you can also register methods and statics in TypeScript.
-
-## Methods
-
-To define an [instance method](../guide.html#methods) in TypeScript, create a new interface representing your instance methods.
-You need to pass that interface as the 3rd generic parameter to the `Schema` constructor **and** as the 3rd generic parameter to `Model` as shown below.
+To use Mongoose's automatic type inference to define types for your [statics](../guide.html#statics) and [methods](../guide.html#methods), you should define your methods and statics using the `methods` and `statics` schema options as follows.
+Do **not** use the `Schema.prototype.method()` and `Schema.prototype.static()` functions, because Mongoose's automatic type inference system cannot detect methods and statics defined using those functions.
 
 ```typescript
-import { Model, Schema, model } from 'mongoose';
+const userSchema = new mongoose.Schema(
+  { name: { type: String, required: true } },
+  {
+    methods: {
+      updateName(name: string) {
+        this.name = name;
+        return this.save();
+      }
+    },
+    statics: {
+      createWithName(name: string) {
+        return this.create({ name });
+      }
+    }
+  }
+);
+const UserModel = mongoose.model('User', userSchema);
 
-interface IUser {
-  firstName: string;
-  lastName: string;
-}
-
-// Put all user instance methods in this interface:
-interface IUserMethods {
-  fullName(): string;
-}
-
-// Create a new Model type that knows about IUserMethods...
-type UserModel = Model<IUser, {}, IUserMethods>;
-
-// And a schema that knows about IUserMethods
-const schema = new Schema<IUser, UserModel, IUserMethods>({
-  firstName: { type: String, required: true },
-  lastName: { type: String, required: true }
-});
-schema.method('fullName', function fullName() {
-  return this.firstName + ' ' + this.lastName;
-});
-
-const User = model<IUser, UserModel>('User', schema);
-
-const user = new User({ firstName: 'Jean-Luc', lastName: 'Picard' });
-const fullName: string = user.fullName(); // 'Jean-Luc Picard'
+const doc = new UserModel({ name: 'test' });
+// Compiles correctly
+doc.updateName('foo');
+// Compiles correctly
+UserModel.createWithName('bar');
 ```
 
-## Statics
+## With Generics
 
+We recommend using Mongoose's automatic type inference where possible, but you can use `Schema` and `Model` generics to set up type inference for your statics and methods.
 Mongoose [models](../models.html) do **not** have an explicit generic parameter for [statics](../guide.html#statics).
 If your model has statics, we recommend creating an interface that [extends](https://www.typescriptlang.org/docs/handbook/interfaces.html) Mongoose's `Model` interface as shown below.
 
@@ -51,78 +42,211 @@ interface IUser {
   name: string;
 }
 
-interface UserModel extends Model<IUser> {
+interface UserModelType extends Model<IUser> {
   myStaticMethod(): number;
 }
 
-const schema = new Schema<IUser, UserModel>({ name: String });
+const schema = new Schema<IUser, UserModelType>({ name: String });
 schema.static('myStaticMethod', function myStaticMethod() {
   return 42;
 });
 
-const User = model<IUser, UserModel>('User', schema);
+const User = model<IUser, UserModelType>('User', schema);
 
 const answer: number = User.myStaticMethod(); // 42
 ```
 
-Mongoose does support auto typed static functions now that it is supplied in schema options.
-Statics functions can be defined as following:
+You should pass methods as the 3rd generic param to the `Schema` constructor as follows.
 
 ```typescript
-import { Schema, model } from 'mongoose';
-
-const schema = new Schema(
-  { name: String },
-  {
-    statics: {
-      myStaticMethod() {
-        return 42;
-      }
-    }
-  }
-);
-
-const User = model('User', schema);
-
-const answer = User.myStaticMethod(); // 42
-```
-
-## Both Methods and Statics
-
-Below is how you can define a model that has both methods and statics.
-
-```typescript
-import { Model, Schema, HydratedDocument, model } from 'mongoose';
+import { Model, Schema, model } from 'mongoose';
 
 interface IUser {
-  firstName: string;
-  lastName: string;
+  name: string;
 }
 
-interface IUserMethods {
-  fullName(): string;
+interface UserMethods {
+  updateName(name: string): Promise<any>;
 }
 
-interface UserModel extends Model<IUser, {}, IUserMethods> {
-  createWithFullName(name: string): Promise<HydratedDocument<IUser, IUserMethods>>;
-}
-
-const schema = new Schema<IUser, UserModel, IUserMethods>({
-  firstName: { type: String, required: true },
-  lastName: { type: String, required: true }
-});
-schema.static('createWithFullName', function createWithFullName(name: string) {
-  const [firstName, lastName] = name.split(' ');
-  return this.create({ firstName, lastName });
-});
-schema.method('fullName', function fullName(): string {
-  return this.firstName + ' ' + this.lastName;
+const schema = new Schema<IUser, Model<IUser>, UserMethods>({ name: String });
+schema.method('updateName', function updateName(name) {
+  this.name = name;
+  return this.save();
 });
 
-const User = model<IUser, UserModel>('User', schema);
-
-User.createWithFullName('Jean-Luc Picard').then(doc => {
-  console.log(doc.firstName); // 'Jean-Luc'
-  doc.fullName(); // 'Jean-Luc Picard'
-});
+const User = model('User', schema);
+const doc = new User({ name: 'test' });
+// Compiles correctly
+doc.updateName('foo');
 ```
+
+## Using `loadClass()` with TypeScript
+
+Mongoose supports applying ES6 classes to a schema using [`schema.loadClass()`](../api/schema.html#Schema.prototype.loadClass()) as an alternative to defining statics and methods in your schema.
+When using TypeScript, there are a few important typing details to understand.
+
+### Basic Usage
+
+`loadClass()` copies static methods, instance methods, and ES getters/setters from the class onto the schema.
+
+```ts
+class MyClass {
+  myMethod() {
+    return 42;
+  }
+
+  static myStatic() {
+    return 42;
+  }
+
+  get myVirtual() {
+    return 42;
+  }
+}
+
+const schema = new Schema({ property1: String });
+schema.loadClass(MyClass);
+```
+
+Mongoose does not automatically update TypeScript types for class members. To get full type support, you must manually define types using Mongoose's [Model](../api/model.html) and [HydratedDocument](../typescript.html) generics.
+
+```ts
+// 1. Define an interface for the raw document data
+interface RawDocType {
+  property1: string;
+}
+
+// 2. Define the Model type
+// This includes the raw data, query helpers, instance methods, virtuals, and statics.
+type MyCombinedModel = Model<
+  RawDocType, 
+  {}, 
+  Pick<MyClass, 'myMethod'>, 
+  Pick<MyClass, 'myVirtual'> 
+> & Pick<typeof MyClass, 'myStatic'>; 
+
+// 3. Define the Document type
+type MyCombinedDocument = HydratedDocument<
+  RawDocType,
+  Pick<MyClass, 'myMethod'>, 
+  {}, 
+  Pick<MyClass, 'myVirtual'> 
+>;
+
+// 4. Create the Mongoose model
+const MyModel = model<RawDocType, MyCombinedModel>(
+  'MyClass',
+  schema
+);
+
+MyModel.myStatic();
+const doc = new MyModel();
+doc.myMethod();
+doc.myVirtual;
+doc.property1;     
+```
+
+### Typing `this` Inside Methods
+
+You can annotate `this` in methods to enable full safety, using the [Model](../api/model.html) and [HydratedDocument](../typescript.html) types you defined.
+Note that this must be done for **each method individually**; it is not possible to set a `this` type for the entire class at once.
+
+```ts
+class MyClass {
+  // Instance method typed with correct `this` type
+  myMethod(this: MyCombinedDocument) {
+    return this.property1;
+  }
+
+  // Static method typed with correct `this` type
+  static myStatic(this: MyCombinedModel) {
+    return 42;
+  }
+}
+```
+
+### Getters / Setters Limitation
+
+TypeScript currently does **not** allow `this` parameters on getters/setters:
+
+```ts
+class MyClass {
+  // error TS2784: 'this' parameters are not allowed in getters
+  get myVirtual(this: MyCombinedDocument) {
+    return this.property1;
+  }
+}
+```
+
+This is a TypeScript limitation. See: [TypeScript issue #52923](https://github.com/microsoft/TypeScript/issues/52923)
+
+As a workaround, you can cast `this` to the document type inside your getter:
+
+```ts
+get myVirtual() {
+  // Workaround: cast 'this' to your document type
+  const self = this as MyCombinedDocument;
+  return `Name: ${self.property1}`;
+}
+```
+
+### Full Example Code
+
+```ts
+import { Model, Schema, model, HydratedDocument } from 'mongoose';
+
+interface RawDocType {
+  property1: string;
+}
+
+class MyClass {
+  myMethod(this: MyCombinedDocument) {
+    return this.property1;
+  }
+
+  static myStatic(this: MyCombinedModel) {
+    return 42;
+  }
+
+  get myVirtual() {
+    const self = this as MyCombinedDocument;
+    return `Hello ${self.property1}`;
+  }
+}
+
+const schema = new Schema<RawDocType>({ property1: String });
+schema.loadClass(MyClass);
+
+type MyCombinedModel = Model<
+  RawDocType,
+  {},
+  Pick<MyClass, 'myMethod'>,
+  Pick<MyClass, 'myVirtual'>
+> & Pick<typeof MyClass, 'myStatic'>;
+
+type MyCombinedDocument = HydratedDocument<
+  RawDocType,
+  Pick<MyClass, 'myMethod'>,
+  {},
+  Pick<MyClass, 'myVirtual'>
+>;
+
+const MyModel = model<RawDocType, MyCombinedModel>(
+  'MyClass',
+  schema
+);
+
+const doc = new MyModel({ property1: 'world' });
+doc.myMethod(); 
+MyModel.myStatic(); 
+console.log(doc.myVirtual); 
+```
+
+### When Should I Use `loadClass()`?
+
+`loadClass()` is useful for defining methods and statics in classes.
+If you have a strong preference for classes, you can use `loadClass()`; however, we recommend defining `statics` and `methods` in schema options as described in the first section.
+
+The major downside of `loadClass()` in TypeScript is that it requires manual TypeScript types.
+If you want better type inference, you can use schema options [`methods`](../guide.html#methods) and [`statics`](../guide.html#statics).

@@ -12,12 +12,12 @@
   }
 </style>
 
-_First be sure you have [MongoDB](http://www.mongodb.org/downloads) and [Node.js](http://nodejs.org/) installed._
+*First be sure you have [MongoDB](https://www.mongodb.com/try/download/community) and [Node.js](http://nodejs.org/en/download) installed.*
 
 Next install Mongoose from the command line using `npm`:
 
-```
-$ npm install mongoose --save
+```sh
+npm install mongoose
 ```
 
 Now say we like fuzzy kittens and want to record every kitten we ever meet
@@ -49,7 +49,7 @@ const kittySchema = new mongoose.Schema({
 });
 ```
 
-So far so good. We've got a schema with one property, `name`, which will be a  `String`. The next step is compiling our schema into a [Model](models.html).
+So far so good. We've got a schema with one property, `name`, which will be a `String`. The next step is compiling our schema into a [Model](models.html).
 
 ```javascript
 const Kitten = mongoose.model('Kitten', kittySchema);
@@ -88,7 +88,7 @@ fluffy.speak(); // "Meow name is fluffy"
 ```
 
 We have talking kittens! But we still haven't saved anything to MongoDB.
-Each document can be saved to the database by calling its [save](api/model.html#model_Model-save) method. The first argument to the callback will be an error if any occurred.
+Each document can be saved to the database by calling its [save](api/model.html#model_Model-save) method.
 
 ```javascript
 await fluffy.save();
@@ -104,14 +104,14 @@ console.log(kittens);
 ```
 
 We just logged all of the kittens in our db to the console.
-If we want to filter our kittens by name, Mongoose supports MongoDBs rich [querying](queries.html) syntax.
+If we want to filter our kittens by name, Mongoose supports MongoDB's rich [querying](queries.html) syntax.
 
 ```javascript
 await Kitten.find({ name: /^fluff/ });
 ```
 
 This performs a search for all documents with a name property that begins
-with "fluff" and returns the result as an array of kittens to the callback.
+with "fluff" and returns the result as an array of kittens.
 
 ## Congratulations
 

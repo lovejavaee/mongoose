@@ -1,31 +1,24 @@
 # Queries
 
-Mongoose [models](models.html) provide several static helper functions
-for [CRUD operations](https://en.wikipedia.org/wiki/Create,_read,_update_and_delete).
-Each of these functions returns a
-[mongoose `Query` object](api/query.html#Query).
+Mongoose [models](models.html) provide several static helper functions for [CRUD operations](https://en.wikipedia.org/wiki/Create,_read,_update_and_delete).
+Each of these functions returns a [mongoose `Query` object](api/query.html#Query()).
 
-- [`Model.deleteMany()`](api.html#model_Model-deleteMany)
-- [`Model.deleteOne()`](api.html#model_Model-deleteOne)
-- [`Model.find()`](api.html#model_Model-find)
-- [`Model.findById()`](api.html#model_Model-findById)
-- [`Model.findByIdAndDelete()`](api.html#model_Model-findByIdAndDelete)
-- [`Model.findByIdAndRemove()`](api.html#model_Model-findByIdAndRemove)
-- [`Model.findByIdAndUpdate()`](api.html#model_Model-findByIdAndUpdate)
-- [`Model.findOne()`](api.html#model_Model-findOne)
-- [`Model.findOneAndDelete()`](api.html#model_Model-findOneAndDelete)
-- [`Model.findOneAndRemove()`](api.html#model_Model-findOneAndRemove)
-- [`Model.findOneAndReplace()`](api.html#model_Model-findOneAndReplace)
-- [`Model.findOneAndUpdate()`](api.html#model_Model-findOneAndUpdate)
-- [`Model.replaceOne()`](api.html#model_Model-replaceOne)
-- [`Model.updateMany()`](api.html#model_Model-updateMany)
-- [`Model.updateOne()`](api.html#model_Model-updateOne)
+* [`Model.deleteMany()`](api.html#model_Model-deleteMany)
+* [`Model.deleteOne()`](api.html#model_Model-deleteOne)
+* [`Model.find()`](api.html#model_Model-find)
+* [`Model.findById()`](api.html#model_Model-findById)
+* [`Model.findByIdAndDelete()`](api.html#model_Model-findByIdAndDelete)
+* [`Model.findByIdAndRemove()`](api.html#model_Model-findByIdAndRemove)
+* [`Model.findByIdAndUpdate()`](api.html#model_Model-findByIdAndUpdate)
+* [`Model.findOne()`](api.html#model_Model-findOne)
+* [`Model.findOneAndDelete()`](api.html#model_Model-findOneAndDelete)
+* [`Model.findOneAndReplace()`](api.html#model_Model-findOneAndReplace)
+* [`Model.findOneAndUpdate()`](api.html#model_Model-findOneAndUpdate)
+* [`Model.replaceOne()`](api.html#model_Model-replaceOne)
+* [`Model.updateMany()`](api.html#model_Model-updateMany)
+* [`Model.updateOne()`](api.html#model_Model-updateOne)
 
-A mongoose query can be executed in one of two ways. First, if you
-pass in a `callback` function, Mongoose will execute the query asynchronously
-and pass the results to the `callback`.
-
-A query also has a `.then()` function, and thus can be used as a promise.
+Mongoose queries can be executed by using `await`, or by using `.then()` to handle the promise returned by the query.
 
 <ul class="toc">
   <li><a href="#executing">Executing</a></li>
@@ -37,29 +30,21 @@ A query also has a `.then()` function, and thus can be used as a promise.
 
 ## Executing
 
-When executing a query with a `callback` function, you specify your query as a JSON document. The JSON document's syntax is the same as the [MongoDB shell](http://www.mongodb.com/docs/manual/tutorial/query-documents/).
+When executing a query, you specify your query as a JSON document. The JSON document's syntax is the same as the [MongoDB shell](http://www.mongodb.com/docs/manual/tutorial/query-documents/).
 
 ```javascript
 const Person = mongoose.model('Person', yourSchema);
 
 // find each person with a last name matching 'Ghost', selecting the `name` and `occupation` fields
-Person.findOne({ 'name.last': 'Ghost' }, 'name occupation', function(err, person) {
-  if (err) return handleError(err);
-  // Prints "Space Ghost is a talk show host".
-  console.log('%s %s is a %s.', person.name.first, person.name.last,
-    person.occupation);
-});
+const person = await Person.findOne({ 'name.last': 'Ghost' }, 'name occupation');
+// Prints "Space Ghost is a talk show host".
+console.log('%s %s is a %s.', person.name.first, person.name.last, person.occupation);
 ```
 
-Mongoose executed the query and passed the results to `callback`. All callbacks in Mongoose use the pattern:
-`callback(error, result)`. If an error occurs executing the query, the `error` parameter will contain an error document, and `result`
-will be null. If the query is successful, the `error` parameter will be null, and the `result` will be populated with the results of the query.
+What `person` is depends on the operation: For `findOne()` it is a [potentially-null single document](api/model.html#model_Model-findOne), `find()` a [list of documents](api/model.html#model_Model-find), `countDocuments()` [the number of documents](api/model.html#model_Model-countDocuments), `updateOne()` the [number of documents affected](api/model.html#model_Model-updateOne), etc.
+The [API docs for Models](api/model.html) provide more details.
 
-Anywhere a callback is passed to a query in Mongoose, the callback follows the pattern `callback(error, results)`.
-What `results` is depends on the operation: For `findOne()` it is a [potentially-null single document](api/model.html#model_Model-findOne), `find()` a [list of documents](api/model.html#model_Model-find), `count()` [the number of documents](api/model.html#model_Model-count), `update()` the [number of documents affected](api/model.html#model_Model-update), etc.
-The [API docs for Models](api/model.html) provide more detail on what is passed to the callbacks.
-
-Now let's look at what happens when no `callback` is passed:
+Now let's look at what happens when no `await` is used:
 
 ```javascript
 // find each person with a last name matching 'Ghost'
@@ -69,12 +54,9 @@ const query = Person.findOne({ 'name.last': 'Ghost' });
 query.select('name occupation');
 
 // execute the query at a later time
-query.exec(function(err, person) {
-  if (err) return handleError(err);
-  // Prints "Space Ghost is a talk show host."
-  console.log('%s %s is a %s.', person.name.first, person.name.last,
-    person.occupation);
-});
+const person = await query.exec();
+// Prints "Space Ghost is a talk show host."
+console.log('%s %s is a %s.', person.name.first, person.name.last, person.occupation);
 ```
 
 In the above code, the `query` variable is of type [Query](api/query.html).
@@ -83,7 +65,7 @@ The below 2 examples are equivalent.
 
 ```javascript
 // With a JSON doc
-Person.
+await Person.
   find({
     occupation: /host/,
     'name.last': 'Ghost',
@@ -93,10 +75,10 @@ Person.
   limit(10).
   sort({ occupation: -1 }).
   select({ name: 1, occupation: 1 }).
-  exec(callback);
+  exec();
 
 // Using query builder
-Person.
+await Person.
   find({ occupation: /host/ }).
   where('name.last').equals('Ghost').
   where('age').gt(17).lt(66).
@@ -104,65 +86,79 @@ Person.
   limit(10).
   sort('-occupation').
   select('name occupation').
-  exec(callback);
+  exec();
 ```
 
 A full list of [Query helper functions can be found in the API docs](api/query.html).
 
-<h2 id="queries-are-not-promises">
-  <a href="#queries-are-not-promises">
-    Queries are Not Promises
-  </a>
-</h2>
+## Queries are Not Promises
 
-Mongoose queries are **not** promises. They have a `.then()`
-function for [co](https://www.npmjs.com/package/co) and
-[async/await](http://thecodebarbarian.com/common-async-await-design-patterns-in-node.js.html)
-as a convenience. However, unlike promises, calling a query's `.then()`
-can execute the query multiple times.
-
-For example, the below code will execute 3 `updateMany()` calls, one
-because of the callback, and two because `.then()` is called twice.
+Mongoose queries are **not** promises.
+Queries are [thenables](https://masteringjs.io/tutorials/fundamentals/thenable), meaning they have a `.then()` method for [async/await](http://thecodebarbarian.com/common-async-await-design-patterns-in-node.js.html) as a convenience.
+However, unlike promises, calling a query's `.then()` executes the query, so calling `then()` multiple times will throw an error.
 
 ```javascript
-const q = MyModel.updateMany({}, { isDeleted: true }, function() {
-  console.log('Update 1');
-});
+const q = MyModel.updateMany({}, { isDeleted: true });
 
-q.then(() => console.log('Update 2'));
-q.then(() => console.log('Update 3'));
+await q.then(() => console.log('Update 2'));
+// Throws "Query was already executed: Test.updateMany({}, { isDeleted: true })"
+await q.then(() => console.log('Update 3'));
 ```
 
-Don't mix using callbacks and promises with queries, or you may end up
-with duplicate operations. That's because passing a callback to a query function
-immediately executes the query, and calling [`then()`](https://masteringjs.io/tutorials/fundamentals/then)
-executes the query again.
+## Pagination
 
-Mixing promises and callbacks can lead to duplicate entries in arrays.
-For example, the below code inserts 2 entries into the `tags` array, **not** just 1.
+There are two common approaches to pagination: skip/limit pagination and
+cursor-based pagination.
+
+Skip/limit pagination, also called offset pagination, uses `sort()`, `skip()`,
+and `limit()` to retrieve a page at a particular offset.
+If the UI needs the exact total number of matching documents, run `find()` and `countDocuments()` separately:
 
 ```javascript
-const BlogPost = mongoose.model('BlogPost', new Schema({
-  title: String,
-  tags: [String]
-}));
+const filter = { active: true };
+const options = { sort: { createdAt: -1 }, skip: 20, limit: 20 };
 
-// Because there's both `await` **and** a callback, this `updateOne()` executes twice
-// and thus pushes the same string into `tags` twice.
-const update = { $push: { tags: ['javascript'] } };
-await BlogPost.updateOne({ title: 'Introduction to Promises' }, update, (err, res) => {
-  console.log(res);
-});
+const [documents, total] = await Promise.all([
+  User.find(filter, null, options),
+  User.countDocuments(filter)
+]);
 ```
 
-<h2 id="refs"><a href="#refs">References to other documents</a></h2>
+This pattern is sufficiently common that Mongoose provides a convenience wrapper `Model.findAndCount()` around these two operations:
 
-There are no joins in MongoDB but sometimes we still want references to
-documents in other collections. This is where [population](populate.html)
-comes in. Read more about how to include documents from other collections in
-your query results [here](api/query.html#query_Query-populate).
+```javascript
+// The following...
+const [documents, total] = await User.findAndCount(filter, null, options);
 
-<h2 id="streaming"><a href="#streaming">Streaming</a></h2>
+// is equivalent to:
+const [documents, total] = await Promise.all([
+  User.find(filter, null, options),
+  User.countDocuments(filter)
+]);
+```
+
+For large result sets, `skip()` can be inefficient, particularly when frequently calling `skip()` with large values.
+`skip()` has to loop through the documents to skip - `.limit(20).skip(100)` means MongoDB needs to iterate through 120 documents.
+Performance degrades linearly as `skip()` size grows.
+
+Instead of an offset, use a value from the last document on the previous page,
+such as `_id` or a timestamp, in the next filter.
+For example, with a descending `_id` sort:
+
+```javascript
+const filter = lastSeenId == null ? {} : { _id: { $lt: lastSeenId } };
+const documents = await User.find(filter).sort({ _id: -1 }).limit(20);
+```
+
+Presuming you filter by an indexed field (MongoDB collections always have an index on `_id`), cursor-based pagination provides consistent performance as the number of documents to skip grows.
+
+## References to other documents {#refs}
+
+There are no joins in MongoDB but sometimes we still want references to documents in other collections.
+This is where [population](populate.html) comes in.
+Read more about how to include documents from other collections in your query results in the [population documentation](api/query.html#query_Query-populate).
+
+## Streaming {#streaming}
 
 You can [stream](http://nodejs.org/api/stream.html) query results from
 MongoDB. You need to call the
@@ -199,7 +195,7 @@ However, cursors can still time out because of [session idle timeouts](https://w
 So even a cursor with `noCursorTimeout` set will still time out after 30 minutes
 of inactivity. You can read more about working around session idle timeouts in the [MongoDB documentation](https://www.mongodb.com/docs/manual/reference/method/cursor.noCursorTimeout/#session-idle-timeout-overrides-nocursortimeout).
 
-<h2 id="versus-aggregation"><a href="#versus-aggregation">Versus Aggregation</a></h2>
+## Versus Aggregation {#versus-aggregation}
 
 [Aggregation](api/aggregate.html#aggregate_Aggregate) can
 do many of the same things that queries can. For example, below is
@@ -241,9 +237,9 @@ const queryRes = await Person.findOne({ _id: idString });
 const aggRes = await Person.aggregate([{ $match: { _id: idString } }]);
 ```
 
-<h2 id="sorting"><a href="#sorting">Sorting</a></h2>
+## Sorting {#sorting}
 
-[Sorting](/docs/api.html#query_Query-sort) is how you can ensure you query results come back in the desired order.
+[Sorting](api/query.html#query_Query-sort) is how you can ensure your query results come back in the desired order.
 
 ```javascript
 const personSchema = new mongoose.Schema({
@@ -259,7 +255,7 @@ await Person.find().sort({ age: -1 }); // returns age starting from 10 as the fi
 await Person.find().sort({ age: 1 }); // returns age starting from 0 as the first entry
 ```
 
-When sorting with mutiple fields, the order of the sort keys determines what key MongoDB server sorts by first.
+When sorting with multiple fields, the order of the sort keys determines what key MongoDB server sorts by first.
 
 ```javascript
 const personSchema = new mongoose.Schema({
@@ -324,6 +320,6 @@ As you can see, age is sorted from 0 to 2 but when age is equal, sorts by weight
 ];
 ```
 
-<h2 id="next"><a href="#next">Next Up</a></h2>
+## Next Up {#next}
 
 Now that we've covered `Queries`, let's take a look at [Validation](validation.html).

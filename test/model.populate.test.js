@@ -7,9 +7,11 @@
 const start = require('./common');
 
 const assert = require('assert');
+const { randomUUID } = require('crypto');
 const utils = require('../lib/utils');
 const util = require('./util');
 const MongooseError = require('../lib/error/mongooseError');
+const splitPopulateQuery = require('../lib/helpers/populate/splitPopulateQuery');
 
 const mongoose = start.mongoose;
 const Schema = mongoose.Schema;
@@ -102,6 +104,21 @@ describe('model: populate:', function() {
 
     // Does not throw
     await post.populate('comments');
+  });
+
+  it('populates an array of ObjectIds with ref set on the array options', async function() {
+    const User = db.model('User', new Schema({ name: String }));
+    const Group = db.model('Group', new Schema({
+      members: { type: [Schema.Types.ObjectId], ref: 'User' }
+    }));
+
+    const user = await User.create({ name: 'User 1' });
+    const group = await Group.create({ members: [user._id] });
+
+    await group.populate('members');
+
+    assert.equal(group.members.length, 1);
+    assert.equal(group.members[0].name, 'User 1');
   });
 
   it('deep population (gh-3103)', async function() {
@@ -2197,7 +2214,7 @@ describe('model: populate:', function() {
     });
 
     describe('in a subdocument', function() {
-      it('works', async function() {
+      it('works (gh-14231)', async function() {
         const docs = await U.find({ name: 'u1' }).populate('comments', { _id: 0 });
 
         let doc = docs[0];
@@ -2229,6 +2246,15 @@ describe('model: populate:', function() {
           assert.equal(typeof d._doc.__v, 'number');
         });
 
+        doc = await U.findOne({ name: 'u1' }).populate('comments', ['-_id']);
+        assert.equal(doc.comments.length, 2);
+        doc.comments.forEach(function(d) {
+          assert.equal(d._id, undefined);
+          assert.equal(Object.keys(d._doc).indexOf('_id'), -1);
+          assert.ok(d.title.length);
+          assert.ok(d.body.length);
+          assert.equal(typeof d._doc.__v, 'number');
+        });
       });
 
       it('with lean', async function() {
@@ -2573,6 +2599,91 @@ describe('model: populate:', function() {
       assert.strictEqual(doc.parts[0].contents[1].item.url, 'https://youtube.com');
     });
 
+    it('with refPath and array of ids with parent refPath', async function() {
+      const Child = db.model(
+        'Child',
+        new mongoose.Schema({
+          fetched: Boolean
+        })
+      );
+
+      const Parent = db.model(
+        'Parent',
+        new mongoose.Schema({
+          docArray: [
+            {
+              type: {
+                type: String,
+                enum: ['Child', 'OtherModel']
+              },
+              ids: [
+                {
+                  type: mongoose.Schema.ObjectId,
+                  refPath: 'docArray.type'
+                }
+              ]
+            }
+          ]
+        })
+      );
+      await Child.insertMany([
+        { _id: new mongoose.Types.ObjectId('6671a008596112f0729c2045'), fetched: true },
+        { _id: new mongoose.Types.ObjectId('667195f3596112f0728abe24'), fetched: true },
+        { _id: new mongoose.Types.ObjectId('6671bd39596112f072cda69c'), fetched: true },
+        { _id: new mongoose.Types.ObjectId('6672c351596112f072868565'), fetched: true },
+        { _id: new mongoose.Types.ObjectId('66734edd596112f0727304a2'), fetched: true },
+        { _id: new mongoose.Types.ObjectId('66726eff596112f072f8e834'), fetched: true },
+        { _id: new mongoose.Types.ObjectId('667267ff596112f072ed56b1'), fetched: true }
+      ]);
+      const { _id } = await Parent.create(
+        {
+          docArray: [
+            {},
+            {
+              type: 'Child',
+              ids: [
+                new mongoose.Types.ObjectId('6671a008596112f0729c2045'),
+                new mongoose.Types.ObjectId('667195f3596112f0728abe24'),
+                new mongoose.Types.ObjectId('6671bd39596112f072cda69c'),
+                new mongoose.Types.ObjectId('6672c351596112f072868565')
+              ]
+            },
+            {
+              type: 'Child',
+              ids: [new mongoose.Types.ObjectId('66734edd596112f0727304a2')]
+            },
+            {},
+            {
+              type: 'Child',
+              ids: [new mongoose.Types.ObjectId('66726eff596112f072f8e834')]
+            },
+            {},
+            {
+              type: 'Child',
+              ids: [new mongoose.Types.ObjectId('667267ff596112f072ed56b1')]
+            }
+          ]
+        }
+      );
+
+      const doc = await Parent.findById(_id).populate('docArray.ids').orFail();
+      assert.strictEqual(doc.docArray.length, 7);
+      assert.strictEqual(doc.docArray[0].ids.length, 0);
+      assert.strictEqual(doc.docArray[1].ids.length, 4);
+      assert.ok(doc.docArray[1].ids[0].fetched);
+      assert.ok(doc.docArray[1].ids[1].fetched);
+      assert.ok(doc.docArray[1].ids[2].fetched);
+      assert.ok(doc.docArray[1].ids[3].fetched);
+      assert.strictEqual(doc.docArray[2].ids.length, 1);
+      assert.ok(doc.docArray[2].ids[0].fetched);
+      assert.strictEqual(doc.docArray[3].ids.length, 0);
+      assert.strictEqual(doc.docArray[4].ids.length, 1);
+      assert.ok(doc.docArray[4].ids[0].fetched);
+      assert.strictEqual(doc.docArray[5].ids.length, 0);
+      assert.strictEqual(doc.docArray[6].ids.length, 1);
+      assert.ok(doc.docArray[6].ids[0].fetched);
+    });
+
     it('with nested nonexistant refPath (gh-6457)', async function() {
       const CommentSchema = new Schema({
         text: String,
@@ -2819,7 +2930,28 @@ describe('model: populate:', function() {
 
       assert.equal(blogposts[0].user.name, 'Fan 1');
       assert.equal(blogposts[0].title, 'Test 1');
+    });
 
+    it('handles multiple spaces in between paths to populate (gh-13951)', async function() {
+      const BlogPost = db.model('BlogPost', new Schema({
+        title: String,
+        user: { type: ObjectId, ref: 'User' },
+        fans: [{ type: ObjectId, ref: 'User' }]
+      }));
+      const User = db.model('User', new Schema({ name: String }));
+
+      const fans = await User.create([{ name: 'Fan 1' }]);
+      const posts = [
+        { title: 'Test 1', user: fans[0]._id, fans: [fans[0]._id] }
+      ];
+      await BlogPost.create(posts);
+      const blogPost = await BlogPost.
+        findOne({ title: 'Test 1' }).
+        populate('user   \t fans');
+
+      assert.equal(blogPost.user.name, 'Fan 1');
+      assert.equal(blogPost.fans[0].name, 'Fan 1');
+      assert.equal(blogPost.title, 'Test 1');
     });
 
     it('maps results back to correct document (gh-1444)', async function() {
@@ -2946,33 +3078,27 @@ describe('model: populate:', function() {
           return ret;
         }
       });
-
       const Team = db.model('Test', teamSchema);
 
       const userSchema = new Schema({
         username: String
       });
-
       userSchema.set('toJSON', {
         transform: function(doc, ret) {
           return ret;
         }
       });
-
       const User = db.model('User', userSchema);
 
       const user = new User({ username: 'Test' });
-
       await user.save();
 
       const team = new Team({ members: [{ user: user }] });
-
       await team.save();
-
       await team.populate('members.user');
 
+      assert.equal(calls, 0);
       team.toJSON();
-
       assert.equal(calls, 1);
     });
 
@@ -3475,6 +3601,128 @@ describe('model: populate:', function() {
 
     });
 
+    describe('inherited read preference and read concern (gh-15553)', function() {
+      it('does not inherit schema-level read preference and read concern in nested populate', async function() {
+        const Publisher = db.model('Publisher', new Schema({ name: String }));
+        const Author = db.model('Author', new Schema({
+          name: String,
+          publisher: { type: ObjectId, ref: 'Publisher' }
+        }, { read: 'nearest', readConcern: { level: 'local' } }));
+        const Article = db.model('Article', new Schema({
+          author: { type: ObjectId, ref: 'Author' }
+        }, { read: 'secondaryPreferred', readConcern: { level: 'majority' } }));
+        const publisher = await Publisher.create({ name: 'Acme Books' });
+        const author = await Author.create({ name: 'Alice', publisher: publisher._id });
+        await Article.create({ author: author._id });
+        const calls = recordFindReadOptions(Article, Author, Publisher);
+
+        await Article.find().populate({ path: 'author', populate: { path: 'publisher' } });
+
+        assert.deepStrictEqual(calls, [
+          { readPreference: 'secondaryPreferred', readConcern: 'majority' },
+          { readPreference: 'nearest', readConcern: 'local' },
+          { readPreference: 'primary', readConcern: undefined }
+        ]);
+      });
+
+      it('uses updated read preference and read concern when cloning an executed query with deferred populate', async function() {
+        const Publisher = db.model('Publisher', new Schema({ name: String }));
+        const Author = db.model('Author', new Schema({ name: String, publisher: { type: ObjectId, ref: 'Publisher' } }));
+        const Article = db.model('Article', new Schema({ author: { type: ObjectId, ref: 'Author' } }));
+        const publisher = await Publisher.create({ name: 'Acme Books' });
+        const author = await Author.create({ name: 'Alice', publisher: publisher._id });
+        await Article.create({ author: author._id });
+        const calls = recordFindReadOptions(Article, Author, Publisher);
+        // `match` function means Mongoose defers populating `publisher` until after filtering authors
+        const query = Article.find().read('primary').readConcern('local').
+          populate({ path: 'author', match: () => ({}), populate: { path: 'publisher' } });
+
+        await query;
+        await query.clone().read('secondaryPreferred').readConcern('majority');
+
+        assert.deepStrictEqual(calls, [
+          { readPreference: 'primary', readConcern: 'local' },
+          { readPreference: 'primary', readConcern: 'local' },
+          { readPreference: 'primary', readConcern: 'local' },
+          { readPreference: 'secondaryPreferred', readConcern: 'majority' },
+          { readPreference: 'secondaryPreferred', readConcern: 'majority' },
+          { readPreference: 'secondaryPreferred', readConcern: 'majority' }
+        ]);
+      });
+
+      it('uses updated read preference when cloning an executed query with plain object populate options', async function() {
+        const Author = db.model('Author', new Schema({ name: String }));
+        const Article = db.model('Article', new Schema({ author: { type: ObjectId, ref: 'Author' } }));
+        const author = await Author.create({ name: 'Alice' });
+        await Article.create({ author: author._id });
+        const calls = recordFindReadOptions(Article, Author);
+        const query = Article.find().read('primary');
+        query.mongooseOptions({ populate: { author: { path: 'author' } } });
+
+        await query;
+        await query.clone().read('secondaryPreferred');
+
+        assert.deepStrictEqual(calls.map(call => call.readPreference),
+          ['primary', 'primary', 'secondaryPreferred', 'secondaryPreferred']);
+      });
+
+      for (const deferred of [false, true]) {
+        it(`preserves explicit nested read options across clones and constructors (deferred: ${deferred})`, async function() {
+          const Publisher = db.model('Publisher', new Schema({ name: String }));
+          const Author = db.model('Author', new Schema({ publisher: { type: ObjectId, ref: 'Publisher' } }));
+          const Article = db.model('Article', new Schema({ author: { type: ObjectId, ref: 'Author' } }));
+          const publisher = await Publisher.create({ name: 'Acme Books' });
+          const author = await Author.create({ publisher: publisher._id });
+          await Article.create({ author: author._id });
+          const calls = recordFindReadOptions(Article, Author, Publisher);
+          const query = Article.find().read('primary').readConcern('local').populate({
+            path: 'author',
+            match: deferred ? () => ({}) : undefined,
+            populate: {
+              path: 'publisher',
+              options: { readPreference: 'primaryPreferred', readConcern: { level: 'local' } }
+            }
+          });
+
+          await query;
+          const cloned = query.clone().read('secondaryPreferred').readConcern('majority');
+          await cloned;
+          const ArticleQuery = cloned.toConstructor();
+          await ArticleQuery().read('nearest').readConcern('available');
+          await cloned.clone().read('primary').readConcern('local');
+
+          assert.deepStrictEqual(calls, [
+            { readPreference: 'primary', readConcern: 'local' },
+            { readPreference: 'primary', readConcern: 'local' },
+            { readPreference: 'primaryPreferred', readConcern: 'local' },
+            { readPreference: 'secondaryPreferred', readConcern: 'majority' },
+            { readPreference: 'secondaryPreferred', readConcern: 'majority' },
+            { readPreference: 'primaryPreferred', readConcern: 'local' },
+            { readPreference: 'nearest', readConcern: 'available' },
+            { readPreference: 'nearest', readConcern: 'available' },
+            { readPreference: 'primaryPreferred', readConcern: 'local' },
+            { readPreference: 'primary', readConcern: 'local' },
+            { readPreference: 'primary', readConcern: 'local' },
+            { readPreference: 'primaryPreferred', readConcern: 'local' }
+          ]);
+        });
+      }
+
+      function recordFindReadOptions(...models) {
+        const calls = [];
+        for (const Model of models) {
+          const find = Model.collection.find;
+          Model.collection.find = function() {
+            const cursor = find.apply(this, arguments);
+            calls.push({ readPreference: cursor.readPreference.mode, readConcern: cursor.readConcern?.level });
+            // Read from primary to avoid replication lag when testing against a replica set
+            return cursor.withReadPreference('primary');
+          };
+        }
+        return calls;
+      }
+    });
+
     describe('populate virtuals (gh-2562)', function() {
       it('basic populate virtuals', async function() {
         const PersonSchema = new Schema({
@@ -3530,6 +3778,65 @@ describe('model: populate:', function() {
 
         const band = await Band.findOne().populate('members');
         assert.deepEqual(band.members.map(b => b.name).sort(), ['AA', 'AB']);
+      });
+
+      it('match prevents using $where', async function() {
+        const ParentSchema = new Schema({
+          name: String,
+          child: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'Child'
+          },
+          children: [{
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'Child'
+          }]
+        });
+
+        const ChildSchema = new Schema({
+          name: String
+        });
+        ChildSchema.virtual('parent', {
+          ref: 'Parent',
+          localField: '_id',
+          foreignField: 'parent'
+        });
+
+        const Parent = db.model('Parent', ParentSchema);
+        const Child = db.model('Child', ChildSchema);
+
+        const child = await Child.create({ name: 'Luke' });
+        const parent = await Parent.create({ name: 'Anakin', child: child._id });
+
+        await assert.rejects(
+          () => Parent.findOne().populate({ path: 'child', match: () => ({ $where: 'typeof console !== "undefined" ? doesNotExist("foo") : true;' }) }),
+          /Cannot use \$where filter with populate\(\) match/
+        );
+        await assert.rejects(
+          () => Parent.find().populate({ path: 'child', match: () => ({ $where: 'typeof console !== "undefined" ? doesNotExist("foo") : true;' }) }),
+          /Cannot use \$where filter with populate\(\) match/
+        );
+        await assert.rejects(
+          () => parent.populate({ path: 'child', match: () => ({ $where: 'typeof console !== "undefined" ? doesNotExist("foo") : true;' }) }),
+          /Cannot use \$where filter with populate\(\) match/
+        );
+        await assert.rejects(
+          () => Child.find().populate({ path: 'parent', match: () => ({ $where: 'typeof console !== "undefined" ? doesNotExist("foo") : true;' }) }),
+          /Cannot use \$where filter with populate\(\) match/
+        );
+        await assert.rejects(
+          () => Child.find().populate({ path: 'parent', match: () => ({ $or: [{ $where: 'typeof console !== "undefined" ? doesNotExist("foo") : true;' }] }) }),
+          /Cannot use \$where filter with populate\(\) match/
+        );
+        await assert.rejects(
+          () => Child.find().populate({ path: 'parent', match: () => ({ $and: [{ $where: 'typeof console !== "undefined" ? doesNotExist("foo") : true;' }] }) }),
+          /Cannot use \$where filter with populate\(\) match/
+        );
+
+        class MyClass {}
+        MyClass.prototype.$where = 'typeof console !== "undefined" ? doesNotExist("foo") : true;';
+        // OK because sift only looks through own properties
+        await Child.find().populate({ path: 'parent', match: () => new MyClass() });
       });
 
       it('multiple source docs', async function() {
@@ -4221,6 +4528,46 @@ describe('model: populate:', function() {
             done();
           }).
           catch(done);
+      });
+
+      it('with functions for ref with subdoc virtual populate (gh-12440) (gh-12363)', async function() {
+        const ASchema = new Schema({
+          name: String
+        });
+
+        const BSchema = new Schema({
+          referencedModel: String,
+          aId: ObjectId
+        });
+
+        BSchema.virtual('a', {
+          ref: function() {
+            return this.referencedModel;
+          },
+          localField: 'aId',
+          foreignField: '_id',
+          justOne: true
+        });
+
+        const ParentSchema = new Schema({
+          b: BSchema
+        });
+
+        const A1 = db.model('Test1', ASchema);
+        const A2 = db.model('Test2', ASchema);
+        const Parent = db.model('Parent', ParentSchema);
+
+        const as = await Promise.all([
+          A1.create({ name: 'a1' }),
+          A2.create({ name: 'a2' })
+        ]);
+        await Parent.create([
+          { b: { name: 'test1', referencedModel: 'Test1', aId: as[0]._id } },
+          { b: { name: 'test2', referencedModel: 'Test2', aId: as[1]._id } },
+          { b: { name: 'test3', referencedModel: 'Test2', aId: '0'.repeat(24) } }
+        ]);
+        const parents = await Parent.find().populate('b.a').sort({ _id: 1 });
+        assert.deepStrictEqual(parents.map(p => p.b.a?.name), ['a1', 'a2', undefined]);
       });
 
       it('with functions for match (gh-7397)', async function() {
@@ -5391,17 +5738,30 @@ describe('model: populate:', function() {
           name: String
         });
 
-        db.model('Test', refSchema);
+        const Ref = db.model('Test', refSchema);
 
         const schema = new mongoose.Schema({
           ref: { type: mongoose.Schema.Types.ObjectId, ref: 'Test' }
         });
 
         const Model = db.model('Test1', schema);
+        const ref = await Ref.create({ name: 'Alice' });
+        await Model.create({ ref: ref._id });
+        const calls = [];
+        // Record Mongoose options, then read fixtures from primary to avoid replication lag.
+        const find = Ref.collection.find;
+        Ref.collection.find = function(filter, options) {
+          calls.push(options);
+          return find.call(this, filter, { ...options, readPreference: 'primary' });
+        };
+        const findModel = Model.collection.find;
+        Model.collection.find = function(filter, options) {
+          return findModel.call(this, filter, { ...options, readPreference: 'primary' });
+        };
 
         const q = Model.find().read('secondaryPreferred').populate('ref');
-        assert.equal(q._mongooseOptions.populate['ref'].options.readPreference.mode,
-          'secondaryPreferred');
+        await q.exec();
+        assert.equal(calls[0].readPreference.mode, 'secondaryPreferred');
       });
 
       it('array underneath non-existent array (gh-6245)', async function() {
@@ -6618,8 +6978,8 @@ describe('model: populate:', function() {
       });
 
       clickedSchema.virtual('users_$', {
-        ref: function(doc) {
-          return doc.events[0].users[0].refKey;
+        ref: function(subdoc) {
+          return subdoc.users[0].refKey;
         },
         localField: 'users.ID',
         foreignField: 'employeeId'
@@ -6682,8 +7042,8 @@ describe('model: populate:', function() {
       });
 
       clickedSchema.virtual('users_$', {
-        ref: function(doc) {
-          const refKeys = doc.events[0].users.map(user => user.refKey);
+        ref: function(subdoc) {
+          const refKeys = subdoc.users.map(user => user.refKey);
           return refKeys;
         },
         localField: 'users.ID',
@@ -8238,6 +8598,58 @@ describe('model: populate:', function() {
       assert.deepEqual(populatedRides[1].files, []);
     });
 
+    it('doesnt insert empty document when lean populating a path within an underneath non-existent document array (gh-14098)', async function() {
+      const userSchema = new mongoose.Schema({
+        fullName: String,
+        company: String
+      });
+      const User = db.model('User', userSchema);
+
+      const fileSchema = new mongoose.Schema({
+        _id: String,
+        uploaderId: {
+          type: mongoose.ObjectId,
+          ref: 'User'
+        }
+      }, { toObject: { virtuals: true }, toJSON: { virtuals: true } });
+      fileSchema.virtual('uploadedBy', {
+        ref: 'User',
+        localField: 'uploaderId',
+        foreignField: '_id',
+        justOne: true
+      });
+
+      const contentSchema = new mongoose.Schema({
+        memo: String,
+        files: { type: [fileSchema], default: [] }
+      }, { toObject: { virtuals: true }, toJSON: { virtuals: true }, _id: false });
+
+      const postSchema = new mongoose.Schema({
+        title: String,
+        content: { type: contentSchema }
+      }, { toObject: { virtuals: true }, toJSON: { virtuals: true } });
+      const Post = db.model('Test1', postSchema);
+
+      const user = await User.create({ fullName: 'John Doe', company: 'GitHub' });
+      await Post.create([
+        { title: 'London-Paris' },
+        {
+          title: 'Berlin-Moscow',
+          content: {
+            memo: 'Not Easy',
+            files: [{ _id: '123', uploaderId: user._id }]
+          }
+        }
+      ]);
+      await Post.updateMany({}, { $unset: { 'content.files': 1 } });
+      const populatedRides = await Post.find({}).populate({
+        path: 'content.files.uploadedBy',
+        justOne: true
+      }).lean();
+      assert.equal(populatedRides[0].content.files, undefined);
+      assert.equal(populatedRides[1].content.files, undefined);
+    });
+
     it('sets empty array if populating undefined path (gh-8455)', async function() {
       const TestSchema = new Schema({
         thingIds: [mongoose.ObjectId]
@@ -8547,6 +8959,221 @@ describe('model: populate:', function() {
       assert.equal(docs[1]._id.toString(), p2._id.toString());
       assert.deepEqual(docs[0].children.map(c => c._id), [1]);
       assert.deepEqual(docs[1].children.map(c => c._id), [4]);
+    });
+
+    describe('splitting populate queries whose `$in` filter would have too many elements (gh-5890)', function() {
+      let maxInFilterLength;
+
+      beforeEach(function() {
+        maxInFilterLength = splitPopulateQuery.maxInFilterLength;
+        splitPopulateQuery.maxInFilterLength = 3;
+      });
+
+      afterEach(function() {
+        splitPopulateQuery.maxInFilterLength = maxInFilterLength;
+      });
+
+      it('executes a separate query per document (gh-5890)', async function() {
+        const childSchema = new Schema({ name: String });
+        const inFilterLengths = [];
+        childSchema.pre('find', function() {
+          inFilterLengths.push(this.getFilter()._id.$in.length);
+        });
+        const Child = db.model('Child', childSchema);
+        const Parent = db.model('Parent', new Schema({
+          children: [{ type: ObjectId, ref: 'Child' }]
+        }));
+
+        const children = await Child.create(['A', 'B', 'C', 'D'].map(name => ({ name })));
+        await Parent.create([
+          { children: [children[0]._id, children[1]._id] },
+          { children: [children[2]._id, children[3]._id] }
+        ]);
+
+        const docs = await Parent.find().sort({ _id: 1 }).populate('children');
+
+        assert.deepStrictEqual(inFilterLengths, [2, 2]);
+        assert.deepStrictEqual(docs[0].children.map(child => child.name), ['A', 'B']);
+        assert.deepStrictEqual(docs[1].children.map(child => child.name), ['C', 'D']);
+      });
+
+      it('splits nested populate queries that go over the limit (gh-5890)', async function() {
+        const viewSchema = new Schema({ name: String });
+        const inFilterLengths = [];
+        viewSchema.pre('find', function() {
+          inFilterLengths.push(this.getFilter()._id.$in.length);
+        });
+        const View = db.model('View', viewSchema);
+        const TvShow = db.model('TvShow', new Schema({
+          title: String,
+          views: [{ type: ObjectId, ref: 'View' }]
+        }));
+        const Example = db.model('Example', new Schema({
+          tvShows: [{ type: ObjectId, ref: 'TvShow' }]
+        }));
+
+        const views = await View.create(['v1', 'v2', 'v3', 'v4'].map(name => ({ name })));
+        const tvShows = await TvShow.create([
+          { title: 'show 1', views: [views[0]._id, views[1]._id] },
+          { title: 'show 2', views: [views[2]._id, views[3]._id] }
+        ]);
+        await Example.create({ tvShows: [tvShows[0]._id, tvShows[1]._id] });
+
+        const doc = await Example.findOne().populate({
+          path: 'tvShows',
+          populate: { path: 'views' }
+        });
+
+        // The top-level `tvShows` populate is under the limit, but the nested `views`
+        // populate has 4 total ids across 2 tvShows, so it executes one query per tvShow
+        assert.deepStrictEqual(inFilterLengths, [2, 2]);
+        assert.deepStrictEqual(doc.tvShows[0].views.map(view => view.name), ['v1', 'v2']);
+        assert.deepStrictEqual(doc.tvShows[1].views.map(view => view.name), ['v3', 'v4']);
+      });
+
+      it('applies sort, skip, and limit per document (gh-5890)', async function() {
+        const childSchema = new Schema({ order: Number });
+        const inFilterLengths = [];
+        childSchema.pre('find', function() {
+          inFilterLengths.push(this.getFilter()._id.$in.length);
+        });
+        const Child = db.model('Child', childSchema);
+        const Parent = db.model('Parent', new Schema({
+          children: [{ type: ObjectId, ref: 'Child' }]
+        }));
+
+        const children = await Child.create([1, 2, 3, 4, 5, 6].map(order => ({ order })));
+        await Parent.create([
+          { children: children.slice(0, 3).map(child => child._id) },
+          { children: children.slice(3).map(child => child._id) }
+        ]);
+
+        const docs = await Parent.find().sort({ _id: 1 }).populate({
+          path: 'children',
+          options: { sort: { order: -1 }, skip: 1, limit: 2 }
+        });
+
+        assert.deepStrictEqual(inFilterLengths, [3, 3]);
+        // Because each document executes its own query, `sort`, `skip`, and `limit` apply
+        // to each document's populated array separately, like `perDocumentLimit`
+        assert.deepStrictEqual(docs[0].children.map(child => child.order), [2, 1]);
+        assert.deepStrictEqual(docs[1].children.map(child => child.order), [5, 4]);
+      });
+
+      it('counts each foreign field\'s copy of the ids when there are multiple foreign fields (gh-5890)', async function() {
+        const childSchema = new Schema({ name: String, f1: Number, f2: Number });
+        const filters = [];
+        childSchema.pre('find', function() {
+          filters.push(this.getFilter());
+        });
+        const Child = db.model('Child', childSchema);
+
+        const parentSchema = new Schema({ whichField: String, childIds: [Number] });
+        parentSchema.virtual('children', {
+          ref: 'Child',
+          localField: 'childIds',
+          foreignField: function() {
+            return this.whichField;
+          }
+        });
+        const Parent = db.model('Parent', parentSchema);
+
+        await Child.create([{ name: 'A', f1: 1 }, { name: 'B', f2: 11 }]);
+        await Parent.create([
+          { whichField: 'f1', childIds: [1] },
+          { whichField: 'f2', childIds: [11] }
+        ]);
+
+        const docs = await Parent.find().sort({ _id: 1 }).populate('children');
+
+        // Only 2 unique ids, but the filter repeats them under `$or` for each of the 2
+        // foreign fields, which puts the query over the limit of 3
+        assert.equal(filters.length, 2);
+        for (const filter of filters) {
+          assert.deepStrictEqual(filter.$or.map(cond => Object.keys(cond)[0]).sort(), ['f1', 'f2']);
+        }
+        assert.deepStrictEqual(
+          filters.map(filter => filter.$or.find(cond => cond.f1).f1.$in[0]).sort(),
+          [1, 11]
+        );
+        assert.deepStrictEqual(docs[0].children.map(child => child.name), ['A']);
+        assert.deepStrictEqual(docs[1].children.map(child => child.name), ['B']);
+      });
+
+      it('gives each split query its own `$in` when `match` uses `$elemMatch` (gh-5890)', async function() {
+        const groupSchema = new Schema({
+          name: String,
+          members: [{ userId: Number, active: Boolean }]
+        });
+        const filters = [];
+        groupSchema.pre('find', function() {
+          filters.push(this.getFilter());
+        });
+        const Group = db.model('Group', groupSchema);
+
+        const match = { members: { $elemMatch: { active: true } } };
+        const userSchema = new Schema({ userId: Number });
+        userSchema.virtual('groups', {
+          ref: 'Group',
+          localField: 'userId',
+          foreignField: 'members.userId',
+          match
+        });
+        const User = db.model('User', userSchema);
+
+        await Group.create([1, 2, 3, 4].map(userId => ({
+          name: `group ${userId}`,
+          members: [{ userId, active: userId !== 4 }]
+        })));
+        await User.create([1, 2, 3, 4].map(userId => ({ userId })));
+
+        const users = await User.find().sort({ userId: 1 }).populate('groups');
+
+        assert.equal(filters.length, 4);
+        for (const filter of filters) {
+          assert.strictEqual(filter.members.$elemMatch.active, true);
+        }
+        // Each split query's `$in` ends up inside `$elemMatch`, so each query needs its
+        // own copy of the `$elemMatch` rather than a reference to the `match` option's
+        assert.deepStrictEqual(
+          filters.map(filter => filter.members.$elemMatch.userId.$in[0]).sort(),
+          [1, 2, 3, 4]
+        );
+        assert.deepStrictEqual(users[0].groups.map(group => group.name), ['group 1']);
+        assert.deepStrictEqual(users[1].groups.map(group => group.name), ['group 2']);
+        assert.deepStrictEqual(users[2].groups.map(group => group.name), ['group 3']);
+        assert.deepStrictEqual(users[3].groups.map(group => group.name), []);
+        // The user's `match` object should not be modified
+        assert.deepStrictEqual(match, { members: { $elemMatch: { active: true } } });
+      });
+
+      it('skips executing a query for documents with no ids, but still initializes the path (gh-5890)', async function() {
+        const childSchema = new Schema({ name: String });
+        const inFilterLengths = [];
+        childSchema.pre('find', function() {
+          inFilterLengths.push(this.getFilter()._id.$in.length);
+        });
+        const Child = db.model('Child', childSchema);
+        const Parent = db.model('Parent', new Schema({
+          children: [{ type: ObjectId, ref: 'Child' }]
+        }));
+
+        const children = await Child.create(['A', 'B', 'C', 'D'].map(name => ({ name })));
+        await Parent.create([
+          { children: [children[0]._id, children[1]._id] },
+          { children: [] },
+          { children: [children[2]._id, children[3]._id] }
+        ]);
+
+        const docs = await Parent.find().sort({ _id: 1 }).populate('children');
+
+        // No query for the middle parent, whose `children` array is empty
+        assert.deepStrictEqual(inFilterLengths, [2, 2]);
+        assert.deepStrictEqual(docs[0].children.map(child => child.name), ['A', 'B']);
+        assert.deepStrictEqual(docs[1].children.map(child => child.name), []);
+        assert.ok(docs[1].populated('children'));
+        assert.deepStrictEqual(docs[2].children.map(child => child.name), ['C', 'D']);
+      });
     });
 
     it('works when embedded discriminator array has populated path but not refPath (gh-8527)', async function() {
@@ -8981,7 +9608,7 @@ describe('model: populate:', function() {
       assert.equal(docs[1].items[0].foo.title, 'doc1');
     });
 
-    it('Sets the populated document\'s parent() (gh-8092)', async function() {
+    it('Sets the populated document\'s parent() (gh-15494) (gh-8092)', async function() {
       const schema = new Schema({
         single: { type: Number, ref: 'Child' },
         arr: [{ type: Number, ref: 'Child' }],
@@ -9023,6 +9650,16 @@ describe('model: populate:', function() {
       await doc.populate('single');
       assert.ok(doc.single.parent() === doc);
       assert.ok(doc.single.$parent() === doc);
+
+      let cursor = await Parent.find().populate('single').cursor();
+      doc = await cursor.next();
+      assert.ok(doc.single.parent() === doc);
+      assert.ok(doc.single.$parent() === doc);
+
+      cursor = await Parent.find().populate('arr').cursor();
+      doc = await cursor.next();
+      assert.ok(doc.arr[0].parent() === doc);
+      assert.ok(doc.arr[0].$parent() === doc);
     });
 
     it('populates single nested discriminator underneath doc array when populated docs have different model but same id (gh-9244)', async function() {
@@ -9372,7 +10009,6 @@ describe('model: populate:', function() {
         child: { type: 'ObjectId', ref: 'Child' },
         children: [{ type: 'ObjectId', ref: 'Child' }]
       }));
-
 
       const children = await Child.create([{ name: 'Luke' }, { name: 'Leia' }]);
 
@@ -10107,6 +10743,51 @@ describe('model: populate:', function() {
     assert.equal(row.values.get(createList._id.toString()).valueObject.name, 'test');
   });
 
+  it('calls function refPath for each map subdocument when populating `$*` path', async function() {
+    const refPathCalls = [];
+
+    const userSchema = Schema({ name: String });
+    const productSchema = Schema({ title: String });
+    const User = db.model('User', userSchema);
+    const Product = db.model('Product', productSchema);
+
+    const rowValuesSchema = Schema({
+      valueModel: String,
+      valueObject: {
+        type: mongoose.Schema.Types.ObjectId,
+        refPath: function(doc, path) {
+          refPathCalls.push({ thisEqualsDoc: this === doc, doc, path });
+          return path.replace(/\.valueObject$/, '.valueModel');
+        }
+      }
+    });
+
+    const rowSchema = Schema({
+      values: { type: mongoose.Schema.Types.Map, of: rowValuesSchema }
+    });
+    const Row = db.model('Row', rowSchema);
+
+    const user = await User.create({ name: 'test' });
+    const product = await Product.create({ title: 'test product' });
+
+    await Row.create({
+      values: {
+        alpha: { valueModel: 'User', valueObject: user._id },
+        beta: { valueModel: 'Product', valueObject: product._id }
+      }
+    });
+
+    const row = await Row.findOne().populate('values.$*.valueObject');
+
+    assert.equal(row.values.get('alpha').valueObject.name, 'test');
+    assert.equal(row.values.get('beta').valueObject.title, 'test product');
+    assert.equal(refPathCalls.length, 2);
+    assert.equal(refPathCalls[0].thisEqualsDoc, true);
+    assert.equal(refPathCalls[1].thisEqualsDoc, true);
+    assert.equal(refPathCalls[0].path, 'values.alpha.valueObject');
+    assert.equal(refPathCalls[1].path, 'values.beta.valueObject');
+  });
+
   it('handles virtual populate with `justOne` underneath document array and sort (gh-12730) (gh-10552)', async function() {
     const shiftSchema = new mongoose.Schema({
       employeeId: mongoose.Types.ObjectId,
@@ -10285,8 +10966,90 @@ describe('model: populate:', function() {
 
   });
 
+  it('handles populating underneath document arrays that have null (gh-13839)', async function() {
+    const schema = new Schema({
+      children: [
+        {
+          doc: { type: mongoose.Schema.Types.ObjectId, ref: 'Child' },
+          name: String
+        }
+      ]
+    });
+    const Parent = db.model('Parent', schema);
+    const Child = db.model('Child', new Schema({ name: String }));
+
+    const child = new Child({ name: 'gh-13839-test' });
+    await child.save();
+    let parent = new Parent({ children: [{ doc: child._id, name: 'foo' }, null] });
+    await parent.save();
+
+    parent = await Parent.findById(parent._id).populate('children.doc');
+    assert.equal(parent.children.length, 2);
+    assert.equal(parent.children[0].doc.name, 'gh-13839-test');
+    assert.equal(parent.children[1], null);
+  });
 
   describe('strictPopulate', function() {
+    it('does not throw an error when using strictPopulate on a nested path (gh-13863)', async function() {
+      const l4Schema = new mongoose.Schema({
+        name: String
+      });
+
+      const l3aSchema = new mongoose.Schema({
+        l4: {
+          type: 'ObjectId',
+          ref: 'L4'
+        }
+      });
+      const l3bSchema = new mongoose.Schema({
+        otherProp: String
+      });
+
+      const l2Schema = new mongoose.Schema({
+        l3a: {
+          type: 'ObjectId',
+          ref: 'L3A'
+        },
+        l3b: {
+          type: 'ObjectId',
+          ref: 'L3B'
+        }
+      });
+
+      const l1Schema = new mongoose.Schema({
+        l2: {
+          type: 'ObjectId',
+          ref: 'L2'
+        }
+      });
+
+      const L1 = db.model('L1', l1Schema);
+      const L2 = db.model('L2', l2Schema);
+      const L3A = db.model('L3A', l3aSchema);
+      const L3B = db.model('L3B', l3bSchema);
+      const L4 = db.model('L4', l4Schema);
+
+      const { _id: l4 } = await L4.create({ name: 'test l4' });
+      const { _id: l3a } = await L3A.create({ l4 });
+      const { _id: l3b } = await L3B.create({ name: 'test l3' });
+      const { _id: l2 } = await L2.create({ l3a, l3b });
+      const { _id: l1 } = await L1.create({ l2 });
+
+      const res = await L1.findById(l1).populate({
+        path: 'l2',
+        populate: {
+          path: 'l3a l3b',
+          populate: {
+            path: 'l4',
+            options: {
+              strictPopulate: false
+            }
+          }
+        }
+      });
+      assert.equal(res.l2.l3a.l4.name, 'test l4');
+      assert.equal(res.l2.l3b.l4, undefined);
+    });
     it('reports full path when throwing `strictPopulate` error with deep populate (gh-10923)', async function() {
       const L2 = db.model('Test', new Schema({ name: String }));
 
@@ -10306,6 +11069,51 @@ describe('model: populate:', function() {
         then(() => null, err => err);
 
       assert.ok(err.message.indexOf('l1.l22') !== -1, err.message);
+    });
+
+    it('propagates toObject options to populate virtuals (gh-13325)', async function() {
+      const userSchema = Schema({
+        firstName: String,
+        companies: {
+          type: [{ companyId: { type: Schema.Types.ObjectId }, companyName: String }]
+        }
+      }, {
+        toObject: { virtuals: true },
+        toJSON: { virtuals: true }
+      });
+
+      userSchema.virtual('companies.details', {
+        ref: 'company',
+        localField: 'companies.companyId',
+        foreignField: '_id',
+        justOne: true
+      });
+
+      const User = db.model('User', userSchema);
+      const companySchema = Schema({
+        name: {
+          type: String
+        },
+        legalName: {
+          type: String,
+          required: true
+        }
+      });
+      const Company = db.model('company', companySchema);
+
+      const comp = await Company.create({
+        name: 'Google',
+        legalName: 'Alphabet Inc'
+      });
+      await User.create({
+        firstName: 'Test',
+        companies: [{ companyId: comp._id, companyName: 'Google' }]
+      });
+      const doc = await User.findOne().populate('companies.details');
+      let obj = doc.toObject();
+      assert.equal(obj.companies[0].details.name, 'Google');
+      obj = doc.toJSON();
+      assert.equal(obj.companies[0].details.name, 'Google');
     });
 
     it('respects strictPopulate schema option (gh-11290)', async function() {
@@ -10407,6 +11215,1813 @@ describe('model: populate:', function() {
         populate({ path: 'test' });
       // should be empty because the original local field was _id and we created a doc with uuids
       assert.equal(normal.test.length, 0);
+    });
+  });
+
+  it('calls match function with virtual as parameter (gh-12443)', async function() {
+    const parentSchema = mongoose.Schema({ name: String });
+    parentSchema.virtual('children', {
+      ref: 'Child',
+      localField: '_id',
+      foreignField: 'parentId',
+      justOne: false,
+      match: {
+        isDeleted: false
+      }
+    });
+    const Parent = db.model('Parent', parentSchema);
+
+    const childSchema = mongoose.Schema({
+      name: String,
+      parentId: 'ObjectId',
+      isDeleted: Boolean
+    });
+    const Child = db.model('Child', childSchema);
+
+    const { _id } = await Parent.create({ name: 'Darth Vader' });
+    await Child.create([
+      { name: 'Luke', parentId: _id, isDeleted: false },
+      { name: 'Leia', parentId: _id, isDeleted: false },
+      { name: 'Chad', parentId: _id, isDeleted: true }
+    ]);
+
+    let doc = await Parent.findById(_id).populate({
+      path: 'children'
+    });
+    assert.deepStrictEqual(doc.children.map(c => c.name).sort(), ['Leia', 'Luke']);
+
+    doc = await Parent.findById(_id).populate({
+      path: 'children',
+      match: (_doc, virtual) => ({
+        ...virtual.options.match,
+        name: /(Luke|Chad)/
+      })
+    });
+    assert.deepStrictEqual(doc.children.map(c => c.name).sort(), ['Luke']);
+
+    doc = await Parent.findById(_id).populate({
+      path: 'children',
+      match: () => ({
+        name: /(Luke|Chad)/
+      })
+    });
+    assert.deepStrictEqual(doc.children.map(c => c.name).sort(), ['Chad', 'Luke']);
+  });
+
+  it('allows pushing to model populated in a query cursor (gh-13575)', async function() {
+    const Company = db.model('Company', Schema({ name: String }));
+    const User = db.model(
+      'User',
+      Schema({ name: String, companies: [{ type: Schema.Types.ObjectId, ref: 'Company' }] })
+    );
+
+    await User.deleteMany({});
+    await Company.insertMany([{ name: 'Company 1' }, { name: 'Company 2' }]);
+    const company = await Company.findOne({ name: 'Company 1' });
+    const company2 = await Company.findOne({ name: 'Company 2' });
+
+    await User.insertMany([{ name: 'User 1', companies: [company.id] }]);
+
+    await User.find()
+      .populate('companies')
+      .cursor()
+      .eachAsync(async(user) => {
+        if (!user.populated('companies')) {
+          await user.populate('companies');
+        }
+
+        user.companies.push(company2);
+
+        await user.save();
+      });
+
+    const user = await User.findOne();
+    assert.equal(user.name, 'User 1');
+    assert.deepEqual(
+      user.toObject().companies.sort().map(v => v.toString()),
+      [company._id.toString(), company2._id.toString()]
+    );
+  });
+
+  it('sets populated docs in correct order when populating virtual underneath document array with justOne (gh-14018)', async function() {
+    const shiftSchema = new mongoose.Schema({
+      employeeId: mongoose.Types.ObjectId,
+      startedAt: Date,
+      endedAt: Date
+    });
+    const Shift = db.model('Shift', shiftSchema);
+
+    const employeeSchema = new mongoose.Schema({
+      name: String
+    });
+    employeeSchema.virtual('mostRecentShift', {
+      ref: Shift,
+      localField: '_id',
+      foreignField: 'employeeId',
+      options: {
+        sort: { startedAt: -1 }
+      },
+      justOne: true
+    });
+    const storeSchema = new mongoose.Schema({
+      location: String,
+      employees: [employeeSchema]
+    });
+    const Store = db.model('Store', storeSchema);
+
+    const store = await Store.create({
+      location: 'Tashbaan',
+      employees: [
+        { _id: '0'.repeat(24), name: 'Aravis' },
+        { _id: '1'.repeat(24), name: 'Shasta' }
+      ]
+    });
+
+    const employeeAravis = store.employees
+      .find(({ name }) => name === 'Aravis');
+    const employeeShasta = store.employees
+      .find(({ name }) => name === 'Shasta');
+
+    await Shift.insertMany([
+      { employeeId: employeeAravis._id, startedAt: new Date('2011-06-01'), endedAt: new Date('2011-06-02') },
+      { employeeId: employeeAravis._id, startedAt: new Date('2013-06-01'), endedAt: new Date('2013-06-02') },
+      { employeeId: employeeShasta._id, startedAt: new Date('2015-06-01'), endedAt: new Date('2015-06-02') }
+    ]);
+
+    const storeWithMostRecentShifts = await Store.findOne({ location: 'Tashbaan' })
+      .populate('employees.mostRecentShift')
+      .select('-__v')
+      .exec();
+    assert.equal(
+      storeWithMostRecentShifts.employees[0].mostRecentShift.employeeId.toHexString(),
+      '0'.repeat(24)
+    );
+    assert.equal(
+      storeWithMostRecentShifts.employees[1].mostRecentShift.employeeId.toHexString(),
+      '1'.repeat(24)
+    );
+
+    await Shift.findOne({ employeeId: employeeAravis._id }).sort({ startedAt: 1 }).then((s) => s.deleteOne());
+
+    const storeWithMostRecentShiftsNew = await Store.findOne({ location: 'Tashbaan' })
+      .populate('employees.mostRecentShift')
+      .select('-__v')
+      .exec();
+    assert.equal(
+      storeWithMostRecentShiftsNew.employees[0].mostRecentShift.employeeId.toHexString(),
+      '0'.repeat(24)
+    );
+    assert.equal(
+      storeWithMostRecentShiftsNew.employees[0].mostRecentShift.startedAt.toString(),
+      new Date('2013-06-01').toString()
+    );
+    assert.equal(
+      storeWithMostRecentShiftsNew.employees[1].mostRecentShift.employeeId.toHexString(),
+      '1'.repeat(24)
+    );
+    assert.equal(
+      storeWithMostRecentShiftsNew.employees[1].mostRecentShift.startedAt.toString(),
+      new Date('2015-06-01').toString()
+    );
+  });
+
+  it('calls transform with single ObjectId when populating justOne path underneath array (gh-14073)', async function() {
+    const mySchema = mongoose.Schema({
+      name: { type: String },
+      items: [{
+        _id: false,
+        name: { type: String },
+        brand: { type: mongoose.Schema.Types.ObjectId, ref: 'Brand' }
+      }]
+    });
+
+    const brandSchema = mongoose.Schema({
+      name: 'String',
+      quantity: Number
+    });
+
+    const myModel = db.model('MyModel', mySchema);
+    const brandModel = db.model('Brand', brandSchema);
+    const { _id: id1 } = await brandModel.create({
+      name: 'test',
+      quantity: 1
+    });
+    const { _id: id2 } = await brandModel.create({
+      name: 'test1',
+      quantity: 1
+    });
+    const { _id: id3 } = await brandModel.create({
+      name: 'test2',
+      quantity: 2
+    });
+    const brands = await brandModel.find();
+    const test = new myModel({ name: 'Test Model' });
+    for (let i = 0; i < brands.length; i++) {
+      test.items.push({ name: `${i}`, brand: brands[i]._id });
+    }
+
+    const id4 = new mongoose.Types.ObjectId();
+    test.items.push({ name: '4', brand: id4 });
+    await test.save();
+
+    const ids = [];
+    await myModel
+      .findOne()
+      .populate([
+        {
+          path: 'items.brand',
+          transform: (doc, id) => {
+            ids.push(id);
+            return doc;
+          }
+        }
+      ]);
+    assert.equal(ids.length, 4);
+    assert.deepStrictEqual(
+      ids.map(id => id?.toHexString()),
+      [id1.toString(), id2.toString(), id3.toString(), id4.toString()]
+    );
+  });
+
+  it('allows deselecting discriminator key when populating (gh-3230) (gh-13760) (gh-13679)', async function() {
+    const Test = db.model(
+      'Test',
+      Schema({ name: String, arr: [{ testRef: { type: 'ObjectId', ref: 'Test2' } }] })
+    );
+
+    const schema = Schema({ name: String });
+    const Test2 = db.model('Test2', schema);
+    const D = Test2.discriminator('D', Schema({ prop: String }));
+
+
+    await Test.deleteMany({});
+    await Test2.deleteMany({});
+    const { _id } = await D.create({ name: 'foo', prop: 'bar' });
+    const test = await Test.create({ name: 'test', arr: [{ testRef: _id }] });
+
+    const doc = await Test
+      .findById(test._id)
+      .populate('arr.testRef', { name: 1, prop: 1, _id: 0, __t: 0 });
+    assert.deepStrictEqual(
+      doc.toObject().arr[0].testRef,
+      { name: 'foo', prop: 'bar' }
+    );
+  });
+
+  it('calls setter on virtual populated path with populated doc (gh-14285)', async function() {
+    const userSchema = new Schema({
+      email: String,
+      name: 'String'
+    });
+
+    const User = db.model('User', userSchema);
+
+    const user = await User.create({
+      email: 'admin@example.com',
+      name: 'Admin'
+    });
+
+    const personSchema = new Schema({
+      userId: ObjectId,
+      userType: String
+    });
+
+    personSchema.
+      virtual('user', {
+        ref() {
+          return this.userType;
+        },
+        localField: 'userId',
+        foreignField: '_id',
+        justOne: true
+      }).
+      set(function(user) {
+        if (user) {
+          this.userId = user._id;
+          this.userType = user.constructor.modelName;
+        } else {
+          this.userId = null;
+          this.userType = null;
+        }
+
+        return user;
+      });
+
+    const Person = db.model('Person', personSchema);
+
+    const person = new Person({
+      userId: user._id,
+      userType: 'User'
+    });
+
+    await person.save();
+
+    const personFromDb = await Person.findById(person._id).populate('user');
+    assert.equal(personFromDb.user.name, 'Admin');
+    assert.equal(personFromDb.userType, 'User');
+    assert.equal(personFromDb.userId.toHexString(), user._id.toHexString());
+  });
+
+  it('handles ref() function that returns a model (gh-14249)', async function() {
+    const aSchema = new Schema({
+      name: String
+    });
+
+    const bSchema = new Schema({
+      name: String
+    });
+
+    const CategoryAModel = db.model('Test', aSchema);
+    const CategoryBModel = db.model('Test1', bSchema);
+
+    const testSchema = new Schema({
+      category: String,
+      subdoc: {
+        type: Schema.Types.ObjectId,
+        ref: function() {
+          return this.category === 'catA' ? CategoryAModel : CategoryBModel;
+        }
+      }
+    });
+
+    const parentSchema = new Schema({
+      name: String,
+      children: [testSchema]
+    });
+    const Parent = db.model('Parent', parentSchema);
+
+    const A = await CategoryAModel.create({
+      name: 'A'
+    });
+    const B = await CategoryBModel.create({
+      name: 'B'
+    });
+
+    const doc = await Parent.create({
+      name: 'Parent',
+      children: [{ category: 'catA', subdoc: A._id }, { category: 'catB', subdoc: B._id }]
+    });
+
+    const res = await Parent.findById(doc._id).populate('children.subdoc');
+    assert.equal(res.children.length, 2);
+    assert.equal(res.children[0].subdoc.name, 'A');
+    assert.equal(res.children[1].subdoc.name, 'B');
+  });
+
+  it('avoids filtering out `null` values when applying match function (gh-14494)', async function() {
+    const gradeSchema = new mongoose.Schema({
+      studentId: mongoose.Types.ObjectId,
+      classId: mongoose.Types.ObjectId,
+      grade: String
+    });
+
+    const Grade = db.model('Test', gradeSchema);
+
+    const studentSchema = new mongoose.Schema({
+      name: String
+    });
+
+    studentSchema.virtual('grade', {
+      ref: Grade,
+      localField: '_id',
+      foreignField: 'studentId',
+      match: (doc) => ({
+        classId: doc._id
+      }),
+      justOne: true
+    });
+
+    const classSchema = new mongoose.Schema({
+      name: String,
+      students: [studentSchema]
+    });
+
+    const Class = db.model('Test2', classSchema);
+
+    const newClass = await Class.create({
+      name: 'History',
+      students: [{ name: 'Henry' }, { name: 'Robert' }]
+    });
+
+    const studentRobert = newClass.students.find(
+      ({ name }) => name === 'Robert'
+    );
+
+    await Grade.create({
+      studentId: studentRobert._id,
+      classId: newClass._id,
+      grade: 'B'
+    });
+
+    const latestClass = await Class.findOne({ name: 'History' }).populate('students.grade');
+
+    assert.equal(latestClass.students[0].name, 'Henry');
+    assert.equal(latestClass.students[0].grade, null);
+    assert.equal(latestClass.students[1].name, 'Robert');
+    assert.equal(latestClass.students[1].grade.grade, 'B');
+  });
+
+  it('avoids depopulating manually populated doc as getter value (gh-14759)', async function() {
+    const ownerSchema = new mongoose.Schema({
+      _id: {
+        type: 'ObjectId',
+        get(value) {
+          return value == null ? value : value.toString();
+        }
+      },
+      name: 'String'
+    });
+    const petSchema = new mongoose.Schema({
+      name: 'String',
+      owner: { type: 'ObjectId', ref: 'Owner' }
+    });
+
+    const Owner = db.model('Owner', ownerSchema);
+    const Pet = db.model('Pet', petSchema);
+
+    const ownerId = new mongoose.Types.ObjectId();
+    const owner = await Owner.create({
+      _id: ownerId,
+      name: 'Alice'
+    });
+    await Pet.create({ name: 'Kitty', owner: owner });
+
+    const fromDb = await Pet.findOne({ owner: ownerId }).lean().orFail();
+    assert.ok(fromDb.owner instanceof mongoose.Types.ObjectId);
+
+    const pet1 = new Pet({ name: 'Kitty1', owner: owner });
+    const pet2 = new Pet({ name: 'Kitty2', owner: owner });
+    assert.equal(pet1.owner.name, 'Alice');
+    assert.equal(pet2.owner.name, 'Alice');
+  });
+
+  it('avoids populating manually populated doc as getter value (gh-14827)', async function() {
+    const ownerSchema = new mongoose.Schema({
+      _id: {
+        type: 'ObjectId',
+        get(value) {
+          return value == null ? value : value.toString();
+        }
+      },
+      name: 'String'
+    });
+    const petSchema = new mongoose.Schema({
+      name: 'String',
+      owner: { type: 'ObjectId', ref: 'Owner' }
+    });
+
+    const Owner = db.model('Owner', ownerSchema);
+    const Pet = db.model('Pet', petSchema);
+
+    const _id = new mongoose.Types.ObjectId();
+    const owner = new Owner({ _id, name: 'Alice' });
+    const pet = new Pet({ name: 'Kitty', owner: owner });
+
+    await owner.save();
+
+    assert.equal(typeof pet._doc.owner.$__.wasPopulated.value, 'object');
+    await pet.populate('owner');
+    assert.equal(typeof pet._doc.owner.$__.wasPopulated.value, 'object');
+
+    await pet.save();
+
+
+    const fromDb = await Pet.findOne({ owner: _id }).lean().orFail();
+    assert.ok(fromDb.owner instanceof mongoose.Types.ObjectId);
+  });
+
+  it('makes sure that populate works correctly with duplicate foreignField with lean(); (gh-14794)', async function() {
+    const authorSchema = new mongoose.Schema({
+      group: String,
+      name: String
+    });
+
+    const postSchema = new mongoose.Schema({
+      authorGroup: String,
+      title: String,
+      content: String
+    });
+
+    const Author = db.model('Author', authorSchema);
+    const Post = db.model('Post', postSchema);
+
+    await Author.create({ group: 'AUTH1', name: 'John Doe' });
+    await Author.create({ group: 'AUTH2', name: 'Jane Smith' });
+    await Author.create({ group: 'AUTH2', name: 'Will Jons' });
+
+    await Post.create({
+      authorGroup: 'AUTH1',
+      title: 'First Post',
+      content: 'Content 1'
+    });
+
+    await Post.create({
+      authorGroup: 'AUTH2',
+      title: 'Second Post',
+      content: 'Content 2'
+    });
+
+    const posts = await Post.find()
+      .populate({
+        path: 'authorGroup',
+        model: 'Author',
+        select: { _id: 1, name: 1 },
+        foreignField: 'group'
+      })
+      .select({ _id: 1, authorGroup: 1, title: 1 })
+      .lean();
+
+    for (const post of posts) {
+      assert.ok(post.authorGroup._id instanceof mongoose.Types.ObjectId);
+      assert.ok(typeof post.authorGroup.name === 'string');
+    }
+    assert.equal(posts.length, 2);
+  });
+
+  it('depopulates if pushing ObjectId to a populated array (gh-1635)', async function() {
+    const ParentModel = db.model('Test', mongoose.Schema({
+      name: String,
+      children: [{ type: 'ObjectId', ref: 'Child' }]
+    }));
+    const ChildModel = db.model('Child', mongoose.Schema({ name: String }));
+
+    const children = await ChildModel.create([{ name: 'Luke' }, { name: 'Leia' }]);
+    const newChild = await ChildModel.create({ name: 'Taco' });
+    const { _id } = await ParentModel.create({ name: 'Anakin', children });
+
+    const doc = await ParentModel.findById(_id).populate('children');
+    doc.children.push(newChild._id);
+
+    assert.ok(doc.children[0] instanceof mongoose.Types.ObjectId);
+    assert.ok(doc.children[1] instanceof mongoose.Types.ObjectId);
+    assert.ok(doc.children[2] instanceof mongoose.Types.ObjectId);
+
+    await doc.save();
+
+    const fromDb = await ParentModel.findById(_id);
+    assert.equal(fromDb.children[0].toHexString(), children[0]._id.toHexString());
+    assert.equal(fromDb.children[1].toHexString(), children[1]._id.toHexString());
+    assert.equal(fromDb.children[2].toHexString(), newChild._id.toHexString());
+  });
+
+  it('handles populating uuids (gh-14869)', async function() {
+    const nodeSchema = new Schema({ _id: { type: 'UUID' }, name: 'String' });
+    const rootSchema = new Schema({
+      _id: { type: 'UUID' },
+      status: 'String',
+      node: [{ type: 'UUID', ref: 'Child' }]
+    });
+
+    const Node = db.model('Child', nodeSchema);
+    const Root = db.model('Parent', rootSchema);
+
+    const node = new Node({
+      _id: '65c7953e-c6e9-4c2f-8328-fe2de7df560d',
+      name: 'test'
+    });
+    await node.save();
+
+    const root = new Root({
+      _id: '05c7953e-c6e9-4c2f-8328-fe2de7df560d',
+      status: 'ok',
+      node: [node._id]
+    });
+    await root.save();
+
+    const foundRoot = await Root.findById(root._id).populate('node');
+
+    let doc = foundRoot.toJSON({ getters: true });
+    assert.strictEqual(doc._id.toString(), '05c7953e-c6e9-4c2f-8328-fe2de7df560d');
+    assert.strictEqual(doc.node.length, 1);
+    assert.strictEqual(doc.node[0]._id.toString(), '65c7953e-c6e9-4c2f-8328-fe2de7df560d');
+
+    doc = foundRoot.toObject({ getters: true });
+    assert.strictEqual(doc._id.toString(), '05c7953e-c6e9-4c2f-8328-fe2de7df560d');
+    assert.strictEqual(doc.node.length, 1);
+    assert.strictEqual(doc.node[0]._id.toString(), '65c7953e-c6e9-4c2f-8328-fe2de7df560d');
+  });
+
+  it('avoids repopulating if forceRepopulate is disabled (gh-14979)', async function() {
+    const ChildSchema = new Schema({ name: String });
+    const ParentSchema = new Schema({
+      children: [{ type: Schema.Types.ObjectId, ref: 'Child' }],
+      child: { type: 'ObjectId', ref: 'Child' }
+    });
+
+    const Child = db.model('Child', ChildSchema);
+    const Parent = db.model('Parent', ParentSchema);
+
+    const child = await Child.create({ name: 'Child test' });
+    let parent = await Parent.create({ child: child._id, children: [child._id] });
+
+    parent = await Parent.findOne({ _id: parent._id }).populate(['child', 'children']).orFail();
+    child.name = 'Child test updated 1';
+    await child.save();
+
+    await parent.populate({ path: 'child', forceRepopulate: false });
+    await parent.populate({ path: 'children', forceRepopulate: false });
+    assert.equal(parent.child.name, 'Child test');
+    assert.equal(parent.children[0].name, 'Child test');
+
+    await Parent.populate([parent], { path: 'child', forceRepopulate: false });
+    await Parent.populate([parent], { path: 'children', forceRepopulate: false });
+    assert.equal(parent.child.name, 'Child test');
+    assert.equal(parent.children[0].name, 'Child test');
+
+    parent.depopulate('child');
+    parent.depopulate('children');
+    await parent.populate({ path: 'child', forceRepopulate: false });
+    await parent.populate({ path: 'children', forceRepopulate: false });
+    assert.equal(parent.child.name, 'Child test updated 1');
+    assert.equal(parent.children[0].name, 'Child test updated 1');
+  });
+
+  it('handles forceRepopulate as a global option (gh-14979)', async function() {
+    const m = new mongoose.Mongoose();
+    m.set('forceRepopulate', false);
+    await m.connect(start.uri);
+    const ChildSchema = new m.Schema({ name: String });
+    const ParentSchema = new m.Schema({
+      children: [{ type: Schema.Types.ObjectId, ref: 'Child' }],
+      child: { type: 'ObjectId', ref: 'Child' }
+    });
+
+    const Child = m.model('Child', ChildSchema);
+    const Parent = m.model('Parent', ParentSchema);
+
+    const child = await Child.create({ name: 'Child test' });
+    let parent = await Parent.create({ child: child._id, children: [child._id] });
+
+    parent = await Parent.findOne({ _id: parent._id }).populate(['child', 'children']).orFail();
+    child.name = 'Child test updated 1';
+    await child.save();
+
+    await parent.populate({ path: 'child' });
+    await parent.populate({ path: 'children' });
+    assert.equal(parent.child.name, 'Child test');
+    assert.equal(parent.children[0].name, 'Child test');
+
+    await Parent.populate([parent], { path: 'child' });
+    await Parent.populate([parent], { path: 'children' });
+    assert.equal(parent.child.name, 'Child test');
+    assert.equal(parent.children[0].name, 'Child test');
+
+    parent.depopulate('child');
+    parent.depopulate('children');
+    await parent.populate({ path: 'child' });
+    await parent.populate({ path: 'children' });
+    assert.equal(parent.child.name, 'Child test updated 1');
+    assert.equal(parent.children[0].name, 'Child test updated 1');
+
+    child.name = 'Child test updated 2';
+    await child.save();
+
+    parent.depopulate('child');
+    parent.depopulate('children');
+    await parent.populate({ path: 'child', forceRepopulate: true });
+    await parent.populate({ path: 'children', forceRepopulate: true });
+    assert.equal(parent.child.name, 'Child test updated 2');
+    assert.equal(parent.children[0].name, 'Child test updated 2');
+
+    await m.disconnect();
+  });
+
+  it('handles populating UUID fields (gh-15315)', async function() {
+    const categorySchema = new Schema({
+      _id: { type: 'UUID', default: () => randomUUID() },
+      name: { type: String, required: true },
+      desc: { type: String, required: true }
+    });
+
+    categorySchema.virtual('announcements', {
+      ref: 'Announcement',
+      localField: '_id',
+      foreignField: 'categories'
+    });
+
+    const announcementSchema = new Schema({
+      _id: { type: 'UUID', default: () => randomUUID() },
+      title: { type: String, required: true },
+      content: { type: String, required: true },
+      validUntil: { type: Date, required: true },
+      important: { type: Boolean, default: false },
+      categories: [{ type: 'UUID', ref: 'Category' }]
+    });
+
+    const Category = db.model('Category', categorySchema);
+    const Announcement = db.model('Announcement', announcementSchema);
+
+    const category = await Category.create({ name: 'Tech', desc: 'Technology News' });
+
+    await Announcement.create({
+      title: 'New Tech Release',
+      content: 'Details about the new tech release',
+      validUntil: new Date(),
+      categories: [category._id]
+    });
+
+    const populatedCategory = await Category.findOne({ _id: category._id }).populate('announcements');
+    assert.strictEqual(populatedCategory.announcements.length, 1);
+    assert.strictEqual(populatedCategory.announcements[0].title, 'New Tech Release');
+  });
+
+  it('handles virtual populated UUID array field (gh-15316)', async function() {
+    const RoleSchema = Schema({
+      _id: { type: 'UUID', required: true },
+      name: String
+    });
+
+    const MemberSchema = Schema({
+      _id: { type: 'UUID', required: true },
+      _role_ids: [{
+        type: 'UUID',
+        ref: 'Role',
+        required: true
+      }]
+    });
+
+    MemberSchema.virtual('roles', {
+      ref: 'Role',
+      localField: '_role_ids',
+      foreignField: '_id'
+    });
+
+    const Role = db.model('Role', RoleSchema);
+    const Member = db.model('Member', MemberSchema);
+
+    const role1 = await Role.create({ _id: randomUUID(), name: 'admin' });
+    const role2 = await Role.create({ _id: randomUUID(), name: 'user' });
+
+    const memberId = randomUUID();
+    await Member.create({ _id: memberId, _role_ids: [role1._id, role2._id] });
+
+    const populated = await Member.findOne({ _id: memberId }).populate('roles');
+    assert.deepStrictEqual(
+      populated.roles.sort((a, b) => a.name.localeCompare(b.name)).map(role => role.name),
+      ['admin', 'user']
+    );
+  });
+
+  it('handles populating virtual underneath map of subdocs (gh-15439)', async function() {
+    // Prompt schema
+    const promptSchema = new Schema({
+      name: String,
+      model: String
+    });
+
+    const Prompt = db.model('Prompt', promptSchema);
+
+    const projectRubricParameterSchema = new Schema({
+      evaluationPromptId: { type: Schema.Types.ObjectId, ref: 'Prompt' },
+      sectionsToBeEvaluated: [String]
+    });
+
+    // Rubric schema
+    const projectRubricSchema = new Schema({
+      parameters: {
+        type: Map,
+        of: projectRubricParameterSchema
+      }
+    });
+    // Submission schema
+    const submissionSchema = new Schema({
+      rubric: projectRubricSchema
+    });
+
+    submissionSchema.virtual('rubric.parameters.$*.evaluationPrompt', {
+      ref: 'Prompt',
+      localField: 'rubric.parameters.$*.evaluationPromptId',
+      foreignField: '_id',
+      justOne: true
+    });
+
+    submissionSchema.set('toObject', { virtuals: true });
+    submissionSchema.set('toJSON', { virtuals: true });
+
+    const Submission = db.model('Submission', submissionSchema);
+
+    // Seed data
+    const prompts = await Prompt.create([
+      { name: 'Test Prompt', model: 'gpt-4' },
+      { name: 'Test Prompt 2', model: 'gpt-4' }
+    ]);
+
+    const submission = await Submission.create({
+      rubric: {
+        parameters: {
+          param1: {
+            evaluationPromptId: prompts[0]._id,
+            sectionsToBeEvaluated: ['intro']
+          },
+          param2: {
+            evaluationPromptId: prompts[1]._id,
+            sectionsToBeEvaluated: ['intro']
+          }
+        }
+      }
+    });
+
+    // Attempt population
+    const populated = await Submission.findById(submission._id).populate(
+      { path: 'rubric.parameters.$*.evaluationPrompt' }
+    );
+
+    assert.strictEqual(populated.rubric.parameters.get('param1').evaluationPrompt.name, 'Test Prompt');
+
+    const obj = JSON.parse(JSON.stringify(populated));
+    assert.strictEqual(obj.rubric.parameters.param1.evaluationPrompt.name, 'Test Prompt');
+    assert.strictEqual(obj.rubric.parameters.param2.evaluationPrompt.name, 'Test Prompt 2');
+  });
+
+  it('handles populating virtual of arrays underneath map of subdocs (gh-15439)', async function() {
+    // Prompt schema
+    const promptSchema = new Schema({
+      name: String,
+      model: String
+    });
+
+    const Prompt = db.model('Prompt', promptSchema);
+
+    // Rubric schema
+    const projectRubricSchema = new Schema({
+      parameters: {
+        type: Map,
+        of: {
+          evaluationPromptIds: [{ type: Schema.Types.ObjectId, ref: 'Prompt' }],
+          sectionsToBeEvaluated: [String]
+        }
+      }
+    });
+    // Submission schema
+    const submissionSchema = new Schema({
+      rubric: projectRubricSchema
+    });
+
+    submissionSchema.virtual('rubric.parameters.$*.evaluationPrompts', {
+      ref: 'Prompt',
+      localField: 'rubric.parameters.$*.evaluationPromptIds',
+      foreignField: '_id',
+      justOne: false
+    });
+
+    submissionSchema.set('toObject', { virtuals: true });
+    submissionSchema.set('toJSON', { virtuals: true });
+
+    const Submission = db.model('Submission', submissionSchema);
+
+    // Seed data
+    const prompts = await Prompt.create([
+      { name: 'Test Prompt', model: 'gpt-4' },
+      { name: 'Test Prompt 2', model: 'gpt-4' },
+      { name: 'Test Prompt 3', model: 'gpt-4' }
+    ]);
+
+    const submission = await Submission.create({
+      rubric: {
+        parameters: {
+          param1: {
+            evaluationPromptIds: [prompts[0]._id, prompts[1]._id],
+            sectionsToBeEvaluated: ['intro']
+          },
+          param2: {
+            evaluationPromptIds: [prompts[2]._id],
+            sectionsToBeEvaluated: ['intro']
+          }
+        }
+      }
+    });
+
+    // Attempt population
+    const populated = await Submission.findById(submission._id).populate([
+      'rubric.parameters.$*.evaluationPrompts'
+    ]);
+    const obj = JSON.parse(JSON.stringify(populated));
+    assert.deepStrictEqual(obj.rubric.parameters.param1.evaluationPrompts.map(prompt => prompt.name), ['Test Prompt', 'Test Prompt 2']);
+    assert.deepStrictEqual(obj.rubric.parameters.param2.evaluationPrompts.map(prompt => prompt.name), ['Test Prompt 3']);
+  });
+
+  it('handles populating embedded discriminator', async function() {
+    const sectionSchema = new Schema({
+      subdoc: new Schema({
+        name: String
+      })
+    });
+    sectionSchema.path('subdoc').discriminator('Test', new Schema({
+      subSection: {
+        type: 'ObjectId',
+        ref: 'SubSection'
+      }
+    }));
+    const Section = db.model('Section', sectionSchema);
+    const SubSection = db.model('SubSection', new Schema({ name: String }));
+
+    const subsection = await SubSection.create({ name: 'foo' });
+    let section = await Section.create({
+      subdoc: {
+        __t: 'Test',
+        subSection: subsection._id
+      }
+    });
+    section = await Section.findById(section).populate('subdoc.subSection');
+    assert.equal(section.subdoc.subSection.name, 'foo');
+  });
+
+  it('handles match function with nested populate where match references a populated field (mongodb-js/mongoose-autopopulate#112)', async function() {
+    // Scenario: Parent has children, children have a reference to Category.
+    // We want to populate children with a match function that filters by category,
+    // AND also populate the category field on children.
+    // mongodb-js/mongoose-autopopulate#112 pointed out that there was an issue in
+    // this case where the parent -> children populate would break if it had a
+    // `match` function because that `match` would be applied against the populated
+    // version of the child.
+    const categorySchema = new Schema({
+      name: String
+    });
+    const Category = db.model('Category', categorySchema);
+
+    const childSchema = new Schema({
+      name: String,
+      category: { type: Schema.Types.ObjectId, ref: 'Category' }
+    });
+    const Child = db.model('Child', childSchema);
+
+    const parentSchema = new Schema({
+      name: String,
+      children: [{ type: Schema.Types.ObjectId, ref: 'Child' }]
+    });
+    const Parent = db.model('Parent', parentSchema);
+
+    // Create test data
+    const category1 = await Category.create({ name: 'Category A' });
+    const category2 = await Category.create({ name: 'Category B' });
+
+    const child1 = await Child.create({ name: 'Child 1', category: category1._id });
+    const child2 = await Child.create({ name: 'Child 2', category: category2._id });
+    const child3 = await Child.create({ name: 'Child 3', category: category1._id });
+
+    const parent = await Parent.create({
+      name: 'Parent',
+      children: [child1._id, child2._id, child3._id]
+    });
+
+    // Populate children with match function filtering by category,
+    // and also populate the category field on each child
+    const doc = await Parent.findById(parent._id).populate({
+      path: 'children',
+      match: () => ({ category: category1._id }),
+      populate: {
+        path: 'category'
+      }
+    });
+
+    // Should only have children with category1
+    assert.equal(doc.children.length, 2);
+    assert.equal(doc.children[0].name, 'Child 1');
+    assert.equal(doc.children[1].name, 'Child 3');
+    // Category should be populated
+    assert.equal(doc.children[0].category.name, 'Category A');
+    assert.equal(doc.children[1].category.name, 'Category A');
+
+    // Also test with lean
+    const leanDoc = await Parent.findById(parent._id).populate({
+      path: 'children',
+      match: () => ({ category: category1._id }),
+      populate: {
+        path: 'category'
+      }
+    }).lean();
+
+    assert.equal(leanDoc.children.length, 2);
+    assert.equal(leanDoc.children[0].name, 'Child 1');
+    assert.equal(leanDoc.children[1].name, 'Child 3');
+    assert.equal(leanDoc.children[0].category.name, 'Category A');
+    assert.equal(leanDoc.children[1].category.name, 'Category A');
+  });
+
+  it('handles match function when nested populate is defined in pre find hook (mongodb-js/mongoose-autopopulate#112)', async function() {
+    // Scenario: Child model has a pre('find') hook that auto-populates category.
+    // Parent populates children with a match function filtering by category.
+    // The issue: the hook runs during populate query, so sift sees populated docs.
+
+    const categorySchema = new Schema({
+      name: String
+    });
+    const Category = db.model('Category', categorySchema);
+
+    const childSchema = new Schema({
+      name: String,
+      category: { type: Schema.Types.ObjectId, ref: 'Category' }
+    });
+
+    // Auto-populate category on all find queries
+    childSchema.pre('find', function() {
+      this.populate('category');
+    });
+
+    const Child = db.model('Child', childSchema);
+
+    const parentSchema = new Schema({
+      name: String,
+      children: [{ type: Schema.Types.ObjectId, ref: 'Child' }]
+    });
+    const Parent = db.model('Parent', parentSchema);
+
+    // Create test data
+    const category1 = await Category.create({ name: 'Category A' });
+    const category2 = await Category.create({ name: 'Category B' });
+
+    const child1 = await Child.create({ name: 'Child 1', category: category1._id });
+    const child2 = await Child.create({ name: 'Child 2', category: category2._id });
+    const child3 = await Child.create({ name: 'Child 3', category: category1._id });
+
+    const parent = await Parent.create({
+      name: 'Parent',
+      children: [child1._id, child2._id, child3._id]
+    });
+
+    // Populate children with match function - the pre('find') hook will auto-populate category
+    const doc = await Parent.findById(parent._id).populate({
+      path: 'children',
+      match: () => ({ category: category1._id })
+    });
+
+    // Should only have children with category1
+    assert.equal(doc.children.length, 2);
+    assert.equal(doc.children[0].name, 'Child 1');
+    assert.equal(doc.children[1].name, 'Child 3');
+    // Category should be populated via the hook
+    assert.equal(doc.children[0].category.name, 'Category A');
+    assert.equal(doc.children[1].category.name, 'Category A');
+  });
+
+  it('does not mix deferred populates from pre-find hooks between different models with refPath (mongodb-js/mongoose-autopopulate#112)', async function() {
+    // Scenario: Using refPath to populate from different models (Child and Pet).
+    // Each model has a pre('find') hook that auto-populates a different field.
+    // Bug: deferred populates from hooks were collected globally across all models,
+    // then applied to ALL children, so Child's 'category' populate would incorrectly
+    // be applied to Pet docs and vice versa.
+
+    const categorySchema = new Schema({ name: String });
+    const Category = db.model('Category', categorySchema);
+
+    const speciesSchema = new Schema({ name: String });
+    const Species = db.model('Species', speciesSchema);
+
+    // Child has a pre('find') hook that auto-populates category
+    const childSchema = new Schema({
+      name: String,
+      category: { type: Schema.Types.ObjectId, ref: 'Category' }
+    });
+    childSchema.pre('find', function() {
+      this.populate('category');
+    });
+    const Child = db.model('Child', childSchema);
+
+    // Pet has a pre('find') hook that auto-populates species
+    const petSchema = new Schema({
+      name: String,
+      species: { type: Schema.Types.ObjectId, ref: 'Species' }
+    });
+    petSchema.pre('find', function() {
+      this.populate('species');
+    });
+    const Pet = db.model('Pet', petSchema);
+
+    // Parent uses refPath to dynamically reference either Child or Pet
+    const parentSchema = new Schema({
+      name: String,
+      items: [{
+        item: { type: Schema.Types.ObjectId, refPath: 'items.itemModel' },
+        itemModel: { type: String, enum: ['Child', 'Pet'] }
+      }]
+    });
+    const Parent = db.model('Parent', parentSchema);
+
+    // Create test data
+    const category1 = await Category.create({ name: 'Category A' });
+    const species1 = await Species.create({ name: 'Dog' });
+
+    const child1 = await Child.create({ name: 'Child 1', category: category1._id });
+    const pet1 = await Pet.create({ name: 'Fido', species: species1._id });
+
+    const parent = await Parent.create({
+      name: 'Parent',
+      items: [
+        { item: child1._id, itemModel: 'Child' },
+        { item: pet1._id, itemModel: 'Pet' }
+      ]
+    });
+
+    // Populate items.item with match function - the pre('find') hooks will add
+    // model-specific sub-populates that should NOT be mixed between models
+    const doc = await Parent.findById(parent._id).populate({
+      path: 'items.item',
+      match: () => ({}) // Match all, triggers deferred populate logic
+    });
+
+    // Verify both items are populated correctly
+    assert.equal(doc.items.length, 2);
+
+    const childItem = doc.items.find(i => i.itemModel === 'Child');
+    const petItem = doc.items.find(i => i.itemModel === 'Pet');
+
+    // Child should have category populated (from Child's pre-find hook)
+    assert.equal(childItem.item.name, 'Child 1');
+    assert.equal(childItem.item.category.name, 'Category A');
+
+    // Pet should have species populated (from Pet's pre-find hook)
+    assert.equal(petItem.item.name, 'Fido');
+    assert.equal(petItem.item.species.name, 'Dog');
+  });
+
+  it('deferred sub-populate respects strictPopulate and _fullPath (mongodb-js/mongoose-autopopulate#112)', async function() {
+    // When sub-populate is deferred (due to match function), it should still:
+    // 1. Set _fullPath correctly for proper error messages
+    // 2. Respect strictPopulate option
+    // 3. Set _localModel so strictPopulate check works
+
+    const categorySchema = new Schema({ name: String });
+    const Category = db.model('Category', categorySchema);
+
+    const childSchema = new Schema({
+      name: String,
+      category: { type: Schema.Types.ObjectId, ref: 'Category' }
+    });
+    const Child = db.model('Child', childSchema);
+
+    const parentSchema = new Schema({
+      name: String,
+      children: [{ type: Schema.Types.ObjectId, ref: 'Child' }]
+    });
+    const Parent = db.model('Parent', parentSchema);
+
+    const category = await Category.create({ name: 'Test Category' });
+    const child = await Child.create({ name: 'Test Child', category: category._id });
+    const parent = await Parent.create({ name: 'Test Parent', children: [child._id] });
+
+    // Test that deferred sub-populate throws strictPopulate error with correct path
+    const err = await Parent.findById(parent._id).populate({
+      path: 'children',
+      match: () => ({}), // Triggers deferred populate
+      populate: {
+        path: 'nonExistentField',
+        strictPopulate: true
+      }
+    }).then(() => null, err => err);
+
+    assert.ok(err);
+    assert.ok(err.message.includes('children.nonExistentField'), 'Error should include full path');
+    assert.ok(err.message.includes('strictPopulate'), 'Error should mention strictPopulate');
+
+    // Test that valid deferred sub-populate still works
+    const doc = await Parent.findById(parent._id).populate({
+      path: 'children',
+      match: () => ({}),
+      populate: {
+        path: 'category',
+        strictPopulate: true
+      }
+    });
+
+    assert.equal(doc.children.length, 1);
+    assert.equal(doc.children[0].category.name, 'Test Category');
+  });
+
+  it('deferred sub-populate resolves dotted parent paths on lean queries', async function() {
+    // A function `match` makes mongoose defer the nested sub-populate. The deferred pass
+    // collects its children from the parent docs, and on a lean result that lookup could
+    // not resolve a dotted path like 'children.child' - it asked for a property literally
+    // named that, got undefined, collected nothing, and the sub-populate silently never
+    // ran, leaving `grandchild` as a bare ObjectId.
+    //
+    // The match returns {} so nothing is filtered out: the only thing under test is
+    // whether the sub-populate ran at all.
+    const grandchildSchema = new Schema({ name: String });
+    const Grandchild = db.model('Grandchild', grandchildSchema);
+
+    const childSchema = new Schema({
+      name: String,
+      grandchild: { type: Schema.Types.ObjectId, ref: 'Grandchild' }
+    });
+    const Child = db.model('Child', childSchema);
+
+    const parentSchema = new Schema({
+      children: [{
+        kind: String,
+        child: { type: Schema.Types.ObjectId, ref: 'Child' },
+        _id: false
+      }]
+    });
+    const Parent = db.model('Parent', parentSchema);
+
+    const grandchild = await Grandchild.create({ name: 'Grandchild 1' });
+    const child = await Child.create({ name: 'Child 1', grandchild: grandchild._id });
+    const parent = await Parent.create({ children: [{ kind: 'test', child: child._id }] });
+
+    const doc = await Parent.findById(parent._id).populate({
+      path: 'children.child',
+      match: () => ({}),
+      populate: {
+        path: 'grandchild'
+      }
+    }).lean();
+
+    assert.equal(doc.children[0].child.name, 'Child 1');
+    assert.equal(doc.children[0].child.grandchild.name, 'Grandchild 1');
+  });
+
+  describe('function refPath (gh-16028)', function() {
+    describe('top-level doc', function() {
+      it('should populate with function refPath', async function() {
+        // Arrange
+        const { Comment, BlogPost } = createTestContext();
+        const blogPost = await BlogPost.create({ title: 'Intro to Mongoose' });
+        await Comment.create({ body: 'Great post!', targetModel: 'BlogPost', target: blogPost._id });
+
+        // Act
+        const commentFromDb = await Comment.findOne().populate('target');
+
+        // Assert
+        assert.equal(commentFromDb.target.title, 'Intro to Mongoose');
+      });
+
+      it('should populate via doc.populate()', async function() {
+        // Arrange
+        const { Comment, BlogPost } = createTestContext();
+        const blogPost = await BlogPost.create({ title: 'Intro to Mongoose' });
+        const comment = await Comment.create({ body: 'Great post!', targetModel: 'BlogPost', target: blogPost._id });
+
+        // Act
+        const commentFromDb = await Comment.findById(comment._id);
+        await commentFromDb.populate('target');
+
+        // Assert
+        assert.equal(commentFromDb.target.title, 'Intro to Mongoose');
+      });
+
+      it('should populate when different docs reference different models', async function() {
+        // Arrange
+        const { Comment, BlogPost, Product } = createTestContext();
+        const blogPost = await BlogPost.create({ title: 'Intro to Mongoose' });
+        const product = await Product.create({ name: 'Widget' });
+        await Comment.create([
+          { body: 'Great post!', targetModel: 'BlogPost', target: blogPost._id },
+          { body: 'Nice product!', targetModel: 'Product', target: product._id }
+        ]);
+
+        // Act
+        const comments = await Comment.find().sort('body').populate('target');
+
+        // Assert
+        assert.equal(comments[0].target.title, 'Intro to Mongoose');
+        assert.equal(comments[1].target.name, 'Widget');
+      });
+
+      it('should pass plain path (no prefix) to refPath function', async function() {
+        // Arrange
+        const { Comment, BlogPost, getRefPathCalls } = createTestContext();
+        const blogPost = await BlogPost.create({ title: 'Intro to Mongoose' });
+        await Comment.create({ targetModel: 'BlogPost', target: blogPost._id });
+
+        // Act
+        const commentFromDb = await Comment.findOne().populate('target');
+
+        // Assert
+        const calls = getRefPathCalls();
+        assert.strictEqual(calls.length, 1);
+        assert.strictEqual(calls[0].thisEqualsDoc, true);
+        assert.strictEqual(calls[0].doc, commentFromDb);
+        assert.strictEqual(calls[0].path, 'target');
+      });
+
+      it('should throw MongooseError if function refPath returns a non-string during populate', async function() {
+        // Arrange
+        const blogPostSchema = new Schema({ title: String });
+        const BlogPost = db.model('BlogPost', blogPostSchema);
+
+        const commentSchema = new Schema({
+          targetModel: String,
+          target: {
+            type: Schema.Types.ObjectId,
+            refPath: function() {
+              return { path: 'targetModel' };
+            }
+          }
+        });
+        const Comment = db.model('Comment', commentSchema);
+
+        const blogPost = await BlogPost.create({ title: 'Intro to Mongoose' });
+        await Comment.create({ targetModel: 'BlogPost', target: blogPost._id });
+
+        // Act
+        const err = await Comment.findOne().populate('target').then(() => null, err => err);
+
+        // Assert
+        assert.equal(err.name, 'MongooseError');
+        assert.ok(/`refPath` must be a string/.test(err.message));
+      });
+
+      function createTestContext() {
+        const refPathCalls = [];
+
+        const blogPostSchema = new Schema({ title: String });
+        const BlogPost = db.model('BlogPost', blogPostSchema);
+
+        const productSchema = new Schema({ name: String });
+        const Product = db.model('Product', productSchema);
+
+        const commentSchema = new Schema({
+          body: String,
+          targetModel: String,
+          target: {
+            type: Schema.Types.ObjectId,
+            refPath: function(doc, path) {
+              refPathCalls.push({ thisEqualsDoc: this === doc, doc, path });
+              return 'targetModel';
+            }
+          }
+        });
+        const Comment = db.model('Comment', commentSchema);
+
+        return { Comment, BlogPost, Product, getRefPathCalls: () => refPathCalls };
+      }
+    });
+
+    describe('subdoc arrays', function() {
+      it('should populate where each subdoc references a different model', async function() {
+        // Arrange
+        const { Inbox, BlogPost, Product } = createTestContext();
+        const blogPost = await BlogPost.create({ title: 'Intro to Mongoose' });
+        const product = await Product.create({ name: 'Widget' });
+        await Inbox.create({
+          notifications: [
+            { targetModel: 'BlogPost', target: blogPost._id },
+            { targetModel: 'Product', target: product._id }
+          ]
+        });
+
+        // Act
+        const inbox = await Inbox.findOne().populate('notifications.target');
+
+        // Assert
+        assert.equal(inbox.notifications[0].target.title, 'Intro to Mongoose');
+        assert.equal(inbox.notifications[1].target.name, 'Widget');
+      });
+
+      it('should populate when some subdocs have null target', async function() {
+        // Arrange
+        const { Inbox, BlogPost } = createTestContext();
+        const blogPost = await BlogPost.create({ title: 'Intro to Mongoose' });
+        await Inbox.create({
+          notifications: [
+            { targetModel: 'BlogPost', target: blogPost._id },
+            { targetModel: 'Product', target: null }
+          ]
+        });
+
+        // Act
+        const inbox = await Inbox.findOne().populate('notifications.target');
+
+        // Assert
+        assert.equal(inbox.notifications[0].target.title, 'Intro to Mongoose');
+        assert.strictEqual(inbox.notifications[1].target, null);
+      });
+
+      it('should pass correct `this`, doc, and indexed path args', async function() {
+        // Arrange
+        const { Inbox, BlogPost, getRefPathCalls } = createTestContext();
+        const blogPost = await BlogPost.create({ title: 'Intro to Mongoose' });
+        await Inbox.create({
+          notifications: [{ targetModel: 'BlogPost', target: blogPost._id }]
+        });
+
+        // Act
+        const inbox = await Inbox.findOne().populate('notifications.target');
+
+        // Assert
+        const calls = getRefPathCalls();
+        assert.strictEqual(calls.length, 1);
+        assert.strictEqual(calls[0].thisEqualsDoc, true);
+        assert.strictEqual(calls[0].doc, inbox.notifications[0]);
+        assert.strictEqual(calls[0].path, 'notifications.0.target');
+      });
+
+      it('should pass distinct indexed paths for each subdoc', async function() {
+        // Arrange
+        const { Inbox, BlogPost, Product, getRefPathCalls } = createTestContext();
+        const blogPost = await BlogPost.create({ title: 'Intro to Mongoose' });
+        const product = await Product.create({ name: 'Widget' });
+        await Inbox.create({
+          notifications: [
+            { targetModel: 'BlogPost', target: blogPost._id },
+            { targetModel: 'Product', target: product._id },
+            { targetModel: 'BlogPost', target: blogPost._id }
+          ]
+        });
+
+        // Act
+        const inbox = await Inbox.findOne().populate('notifications.target');
+
+        // Assert
+        const calls = getRefPathCalls();
+        assert.strictEqual(calls.length, 3);
+        assert.strictEqual(calls[0].thisEqualsDoc, true);
+        assert.strictEqual(calls[0].doc, inbox.notifications[0]);
+        assert.strictEqual(calls[0].path, 'notifications.0.target');
+        assert.strictEqual(calls[1].thisEqualsDoc, true);
+        assert.strictEqual(calls[1].doc, inbox.notifications[1]);
+        assert.strictEqual(calls[1].path, 'notifications.1.target');
+        assert.strictEqual(calls[2].thisEqualsDoc, true);
+        assert.strictEqual(calls[2].doc, inbox.notifications[2]);
+        assert.strictEqual(calls[2].path, 'notifications.2.target');
+      });
+
+      it('should pass indexed path with lean queries', async function() {
+        // Arrange
+        const { Inbox, BlogPost, getRefPathCalls } = createTestContext();
+        const blogPost = await BlogPost.create({ title: 'Intro to Mongoose' });
+        await Inbox.create({
+          notifications: [{ targetModel: 'BlogPost', target: blogPost._id }]
+        });
+
+        // Act
+        const inbox = await Inbox.findOne().populate('notifications.target').lean();
+
+        // Assert
+        assert.equal(inbox.notifications[0].target.title, 'Intro to Mongoose');
+        const calls = getRefPathCalls();
+        assert.strictEqual(calls.length, 1);
+        assert.strictEqual(calls[0].thisEqualsDoc, true);
+        assert.strictEqual(calls[0].doc, inbox.notifications[0]);
+        assert.strictEqual(calls[0].path, 'notifications.0.target');
+      });
+
+      it('should populate via doc.populate()', async function() {
+        // Arrange
+        const { Inbox, BlogPost, getRefPathCalls } = createTestContext();
+        const blogPost = await BlogPost.create({ title: 'Intro to Mongoose' });
+        await Inbox.create({
+          notifications: [{ targetModel: 'BlogPost', target: blogPost._id }]
+        });
+
+        // Act
+        const inbox = await Inbox.findOne();
+        await inbox.populate('notifications.target');
+
+        // Assert
+        assert.equal(inbox.notifications[0].target.title, 'Intro to Mongoose');
+        const calls = getRefPathCalls();
+        assert.strictEqual(calls.length, 1);
+        assert.strictEqual(calls[0].thisEqualsDoc, true);
+        assert.strictEqual(calls[0].doc, inbox.notifications[0]);
+        assert.strictEqual(calls[0].path, 'notifications.0.target');
+      });
+
+      it('should populate when refPath returns different paths per subdoc', async function() {
+        // Arrange
+        const blogPostSchema = new Schema({ title: String });
+        const BlogPost = db.model('BlogPost', blogPostSchema);
+
+        const productSchema = new Schema({ name: String });
+        const Product = db.model('Product', productSchema);
+
+        const notificationSchema = new Schema({
+          blogPostModel: String,
+          productModel: String,
+          kind: String,
+          target: {
+            type: Schema.Types.ObjectId,
+            refPath: function(_doc, path) {
+              const kind = this.get ? this.get('kind') : _doc.kind;
+              return kind === 'blog'
+                ? path.replace('.target', '.blogPostModel')
+                : path.replace('.target', '.productModel');
+            }
+          }
+        });
+
+        const inboxSchema = new Schema({ notifications: [notificationSchema] });
+        const Inbox = db.model('Inbox', inboxSchema);
+
+        const blogPost = await BlogPost.create({ title: 'Intro to Mongoose' });
+        const product = await Product.create({ name: 'Widget' });
+        await Inbox.create({
+          notifications: [
+            { kind: 'blog', blogPostModel: 'BlogPost', target: blogPost._id },
+            { kind: 'product', productModel: 'Product', target: product._id }
+          ]
+        });
+
+        // Act
+        const inbox = await Inbox.findOne().populate('notifications.target');
+
+        // Assert
+        assert.equal(inbox.notifications[0].target.title, 'Intro to Mongoose');
+        assert.equal(inbox.notifications[1].target.name, 'Widget');
+      });
+
+      it('should pass consistent indexed path in $set and populate', async function() {
+        // Arrange
+        const blogPostSchema = new Schema({ title: String });
+        const BlogPost = db.model('BlogPost', blogPostSchema);
+
+        const refPathCalls = [];
+        const notificationSchema = new Schema({
+          targetModel: String,
+          target: {
+            type: Schema.Types.ObjectId,
+            refPath: function(_doc, path) {
+              refPathCalls.push(path);
+              return path.replace('.target', '.targetModel');
+            }
+          }
+        });
+        const inboxSchema = new Schema({ notifications: [notificationSchema] });
+        const Inbox = db.model('Inbox', inboxSchema);
+
+        const blogPost = await BlogPost.create({ title: 'Intro to Mongoose' });
+
+        // Act - $set during construction, then populate
+        await Inbox.create({
+          notifications: [{ targetModel: 'BlogPost', target: blogPost }]
+        });
+        await Inbox.findOne().populate('notifications.target');
+
+        // Assert - both calls get the same indexed path
+        assert.strictEqual(refPathCalls.length, 2);
+        assert.strictEqual(refPathCalls[0], 'notifications.0.target');
+        assert.strictEqual(refPathCalls[1], 'notifications.0.target');
+      });
+
+      it('should not break string refPath', async function() {
+        // Arrange
+        const blogPostSchema = new Schema({ title: String });
+        const BlogPost = db.model('BlogPost', blogPostSchema);
+
+        const productSchema = new Schema({ name: String });
+        const Product = db.model('Product', productSchema);
+
+        // String refPath on subdoc arrays is root-relative (e.g., 'notifications.targetModel')
+        const notificationSchema = new Schema({
+          targetModel: String,
+          target: {
+            type: Schema.Types.ObjectId,
+            refPath: 'notifications.targetModel'
+          }
+        });
+        const inboxSchema = new Schema({ notifications: [notificationSchema] });
+        const Inbox = db.model('Inbox', inboxSchema);
+
+        const blogPost = await BlogPost.create({ title: 'Intro to Mongoose' });
+        const product = await Product.create({ name: 'Widget' });
+        await Inbox.create({
+          notifications: [
+            { targetModel: 'BlogPost', target: blogPost._id },
+            { targetModel: 'Product', target: product._id }
+          ]
+        });
+
+        // Act
+        const inbox = await Inbox.findOne().populate('notifications.target');
+
+        // Assert
+        assert.equal(inbox.notifications[0].target.title, 'Intro to Mongoose');
+        assert.equal(inbox.notifications[1].target.name, 'Widget');
+      });
+
+      function createTestContext() {
+        const refPathCalls = [];
+
+        const blogPostSchema = new Schema({ title: String });
+        const BlogPost = db.model('BlogPost', blogPostSchema);
+
+        const productSchema = new Schema({ name: String });
+        const Product = db.model('Product', productSchema);
+
+        const notificationSchema = new Schema({
+          targetModel: String,
+          target: {
+            type: Schema.Types.ObjectId,
+            refPath: function(doc, path) {
+              refPathCalls.push({ thisEqualsDoc: this === doc, doc, path });
+              return path.replace('.target', '.targetModel');
+            }
+          }
+        });
+        const inboxSchema = new Schema({ notifications: [notificationSchema] });
+        const Inbox = db.model('Inbox', inboxSchema);
+
+        return { Inbox, BlogPost, Product, getRefPathCalls: () => refPathCalls };
+      }
+    });
+
+    describe('deeply nested arrays', function() {
+      it('should populate', async function() {
+        // Arrange
+        const { Dashboard, BlogPost, Product } = createTestContext();
+        const blogPost = await BlogPost.create({ title: 'Intro to Mongoose' });
+        const product = await Product.create({ name: 'Widget' });
+        await Dashboard.create({
+          channels: [{
+            notifications: [
+              { targetModel: 'BlogPost', target: blogPost._id },
+              { targetModel: 'Product', target: product._id }
+            ]
+          }]
+        });
+
+        // Act
+        const dashboard = await Dashboard.findOne()
+          .populate('channels.notifications.target');
+
+        // Assert
+        assert.equal(dashboard.channels[0].notifications[0].target.title, 'Intro to Mongoose');
+        assert.equal(dashboard.channels[0].notifications[1].target.name, 'Widget');
+      });
+
+      it('should pass fully indexed path', async function() {
+        // Arrange
+        const { Dashboard, BlogPost, Product, getRefPathCalls } = createTestContext();
+        const blogPost = await BlogPost.create({ title: 'Intro to Mongoose' });
+        const product = await Product.create({ name: 'Widget' });
+        await Dashboard.create({
+          channels: [{
+            notifications: [
+              { targetModel: 'BlogPost', target: blogPost._id },
+              { targetModel: 'Product', target: product._id }
+            ]
+          }]
+        });
+
+        // Act
+        const dashboard = await Dashboard.findOne()
+          .populate('channels.notifications.target');
+
+        // Assert
+        assert.equal(dashboard.channels[0].notifications[0].target.title, 'Intro to Mongoose');
+        assert.equal(dashboard.channels[0].notifications[1].target.name, 'Widget');
+        const calls = getRefPathCalls();
+        assert.strictEqual(calls.length, 2);
+        assert.strictEqual(calls[0].thisEqualsDoc, true);
+        assert.strictEqual(calls[0].doc, dashboard.channels[0].notifications[0]);
+        assert.strictEqual(calls[0].path, 'channels.0.notifications.0.target');
+        assert.strictEqual(calls[1].thisEqualsDoc, true);
+        assert.strictEqual(calls[1].doc, dashboard.channels[0].notifications[1]);
+        assert.strictEqual(calls[1].path, 'channels.0.notifications.1.target');
+      });
+
+      it('should pass correct indexed path with lean and multiple parent array elements', async function() {
+        // Arrange
+        const { Dashboard, BlogPost, Product, getRefPathCalls } = createTestContext();
+        const blogPost = await BlogPost.create({ title: 'Intro to Mongoose' });
+        const product = await Product.create({ name: 'Widget' });
+        await Dashboard.create({
+          channels: [
+            { notifications: [{ targetModel: 'BlogPost', target: blogPost._id }] },
+            { notifications: [{ targetModel: 'Product', target: product._id }] }
+          ]
+        });
+
+        // Act
+        const dashboard = await Dashboard.findOne()
+          .populate('channels.notifications.target')
+          .lean();
+
+        // Assert
+        assert.equal(dashboard.channels[0].notifications[0].target.title, 'Intro to Mongoose');
+        assert.equal(dashboard.channels[1].notifications[0].target.name, 'Widget');
+        const calls = getRefPathCalls();
+        assert.strictEqual(calls.length, 2);
+        assert.strictEqual(calls[0].path, 'channels.0.notifications.0.target');
+        assert.strictEqual(calls[1].path, 'channels.1.notifications.0.target');
+      });
+
+      function createTestContext() {
+        const refPathCalls = [];
+
+        const blogPostSchema = new Schema({ title: String });
+        const BlogPost = db.model('BlogPost', blogPostSchema);
+
+        const productSchema = new Schema({ name: String });
+        const Product = db.model('Product', productSchema);
+
+        const notificationSchema = new Schema({
+          targetModel: String,
+          target: {
+            type: Schema.Types.ObjectId,
+            refPath: function(doc, path) {
+              refPathCalls.push({ thisEqualsDoc: this === doc, doc, path });
+              return path.replace('.target', '.targetModel');
+            }
+          }
+        });
+        const channelSchema = new Schema({ notifications: [notificationSchema] });
+        const dashboardSchema = new Schema({ channels: [channelSchema] });
+        const Dashboard = db.model('Dashboard', dashboardSchema);
+
+        return { Dashboard, BlogPost, Product, getRefPathCalls: () => refPathCalls };
+      }
+    });
+
+    describe('single nested subdoc', function() {
+      it('should populate and pass path without array index', async function() {
+        // Arrange
+        const refPathCalls = [];
+
+        const blogPostSchema = new Schema({ title: String });
+        const BlogPost = db.model('BlogPost', blogPostSchema);
+
+        const metadataSchema = new Schema({
+          targetModel: String,
+          target: {
+            type: Schema.Types.ObjectId,
+            refPath: function(doc, path) {
+              refPathCalls.push({ thisEqualsDoc: this === doc, doc, path });
+              return path.replace('.target', '.targetModel');
+            }
+          }
+        });
+        const postSchema = new Schema({ title: String, metadata: metadataSchema });
+        const Post = db.model('Post', postSchema);
+
+        const blogPost = await BlogPost.create({ title: 'Referenced Post' });
+
+        // Passing _id does not trigger refPath during $set (no model to check)
+        await Post.create({
+          title: 'Post with ID',
+          metadata: { targetModel: 'BlogPost', target: blogPost._id }
+        });
+        assert.strictEqual(refPathCalls.length, 0);
+
+        // Passing a document triggers refPath during $set to verify the model
+        const createdPost = await Post.create({
+          title: 'Post with Doc',
+          metadata: { targetModel: 'BlogPost', target: blogPost }
+        });
+        assert.strictEqual(refPathCalls.length, 1);
+        assert.strictEqual(refPathCalls[0].thisEqualsDoc, true);
+        assert.strictEqual(refPathCalls[0].doc, createdPost.metadata);
+        assert.strictEqual(refPathCalls[0].path, 'metadata.target');
+
+        // Act
+        const post = await Post.findOne({ title: 'Post with Doc' }).populate('metadata.target');
+
+        // Assert
+        assert.equal(post.metadata.target.title, 'Referenced Post');
+        assert.strictEqual(refPathCalls.length, 2);
+        assert.strictEqual(refPathCalls[1].thisEqualsDoc, true);
+        assert.strictEqual(refPathCalls[1].doc, post.metadata);
+        assert.strictEqual(refPathCalls[1].path, 'metadata.target');
+      });
+    });
+
+    describe('shared schema across multiple arrays', function() {
+      it('should populate with distinct indexed paths per array', async function() {
+        // Arrange
+        const refPathCalls = [];
+
+        const userSchema = new Schema({ name: String });
+        const User = db.model('User', userSchema);
+
+        const agentSchema = new Schema({ vendor: String });
+        const Agent = db.model('Agent', agentSchema);
+
+        const subSchema = new Schema({
+          kind: String,
+          item: {
+            type: Schema.Types.ObjectId,
+            refPath: function(doc, path) {
+              refPathCalls.push({ thisEqualsDoc: this === doc, doc, path });
+              return path.replace(/\.item$/, '.kind');
+            }
+          }
+        });
+        const recordSchema = new Schema({ users: [subSchema], agents: [subSchema] });
+        const Record = db.model('Record', recordSchema);
+
+        const user = await User.create({ name: 'Hafez' });
+        const agent = await Agent.create({ vendor: 'chrome' });
+        await Record.create({
+          users: [{ kind: 'User', item: user._id }],
+          agents: [{ kind: 'Agent', item: agent._id }]
+        });
+
+        // Act
+        const record = await Record.findOne()
+          .populate('users.item')
+          .populate('agents.item');
+
+        // Assert
+        assert.equal(record.users[0].item.name, 'Hafez');
+        assert.equal(record.agents[0].item.vendor, 'chrome');
+        assert.strictEqual(refPathCalls.length, 2);
+        assert.strictEqual(refPathCalls[0].thisEqualsDoc, true);
+        assert.strictEqual(refPathCalls[0].doc, record.users[0]);
+        assert.strictEqual(refPathCalls[0].path, 'users.0.item');
+        assert.strictEqual(refPathCalls[1].thisEqualsDoc, true);
+        assert.strictEqual(refPathCalls[1].doc, record.agents[0]);
+        assert.strictEqual(refPathCalls[1].path, 'agents.0.item');
+      });
     });
   });
 });

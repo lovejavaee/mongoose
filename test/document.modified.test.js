@@ -165,6 +165,22 @@ describe('document modified', function() {
       assert.equal(post.isModified('title'), false);
     });
 
+    it('should support passing a string of keys separated by a blank space as the first argument', function() {
+      const post = new BlogPost();
+      post.init({
+        title: 'Test',
+        slug: 'test',
+        date: new Date()
+      });
+
+      assert.equal(post.isModified('title'), false);
+      post.set('title', 'modified title');
+      assert.equal(post.isModified('title'), true);
+      assert.equal(post.isModified('slug'), false);
+      assert.equal(post.isModified('title slug'), true);
+    });
+
+
     describe('on DocumentArray', function() {
       it('work', function() {
         const post = new BlogPost();
@@ -180,6 +196,43 @@ describe('document modified', function() {
         assert.equal(post.isDirectModified('comments'), false);
         assert.equal(post.isModified('comments.0.title'), true);
         assert.equal(post.isDirectModified('comments.0.title'), true);
+      });
+      it('with push (gh-14024)', async function() {
+        const post = new BlogPost();
+        post.init({
+          title: 'Test',
+          slug: 'test',
+          comments: [{ title: 'Test', date: new Date(), body: 'Test' }]
+        });
+
+        post.comments.push({ title: 'new comment', body: 'test' });
+
+        assert.equal(post.isModified('comments.0.title', { ignoreAtomics: true }), false);
+        assert.equal(post.isModified('comments.0.body', { ignoreAtomics: true }), false);
+        assert.equal(post.get('comments')[0].isModified('body', { ignoreAtomics: true }), false);
+      });
+      it('with push and set (gh-14024)', async function() {
+        const post = new BlogPost();
+        post.init({
+          title: 'Test',
+          slug: 'test',
+          comments: [{ title: 'Test', date: new Date(), body: 'Test' }]
+        });
+
+        post.comments.push({ title: 'new comment', body: 'test' });
+        post.get('comments')[0].set('title', 'Woot');
+
+        assert.equal(post.isModified('comments', { ignoreAtomics: true }), true);
+        assert.equal(post.isModified('comments.0.title', { ignoreAtomics: true }), true);
+        assert.equal(post.isDirectModified('comments.0.title'), true);
+        assert.equal(post.isDirectModified('comments.0.body'), false);
+        assert.equal(post.isModified('comments.0.body', { ignoreAtomics: true }), false);
+
+        assert.equal(post.isModified('comments', { ignoreAtomics: true }), true);
+        assert.equal(post.isModified('comments.0.title', { ignoreAtomics: true }), true);
+        assert.equal(post.isDirectModified('comments.0.title'), true);
+        assert.equal(post.isDirectModified('comments.0.body'), false);
+        assert.equal(post.isModified('comments.0.body', { ignoreAtomics: true }), false);
       });
       it('with accessors', function() {
         const post = new BlogPost();
@@ -270,9 +323,8 @@ describe('document modified', function() {
       });
 
       let preCalls = 0;
-      childSchema.pre('save', function(next) {
+      childSchema.pre('save', function() {
         ++preCalls;
-        next();
       });
 
       let postCalls = 0;

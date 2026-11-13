@@ -3,7 +3,7 @@
 [Virtuals](../tutorials/virtuals.html) are computed properties: you can access virtuals on hydrated Mongoose documents, but virtuals are **not** stored in MongoDB.
 Mongoose supports auto typed virtuals so you don't need to define additional typescript interface anymore but you are still able to do so.
 
-## Automatically Inferred Types:
+## Automatically Inferred Types
 
 To make mongoose able to infer virtuals type, You have to define them in schema constructor as following:
 
@@ -28,8 +28,11 @@ const schema = new Schema(
 );
 ```
 
+If you are using automatic schema inference, you should define virtuals using the `virtuals` option in the schema constructor as shown above.
+Mongoose will not automatically infer any virtuals you define using `Schema.prototype.virtual()`.
+
 Note that Mongoose does **not** include virtuals in the returned type from `InferSchemaType`.
-That is because `InferSchemaType` returns the "raw" document interface, which represents the structure of the data stored in MongoDB.
+That is because `InferSchemaType` returns a value similar to the raw document interface, which represents the structure of the data stored in MongoDB.
 
 ```ts
 type User = InferSchemaType<typeof schema>;
@@ -52,7 +55,7 @@ user.fullName;
 type UserDocument = ReturnType<(typeof UserModel)['hydrate']>;
 ```
 
-## Set virtuals type manually:
+## Set virtuals type manually
 
 You shouldn't define virtuals in your TypeScript [document interface](../typescript.html).
 Instead, you should define a separate interface for your virtuals, and pass this interface to `Model` and `Schema`.
@@ -72,9 +75,9 @@ interface UserVirtuals {
   fullName: string;
 }
 
-type UserModel = Model<UserDoc, {}, UserVirtuals>; // <-- add virtuals here...
+type UserModelType = Model<UserDoc, {}, {}, UserVirtuals>; // <-- add virtuals here...
 
-const schema = new Schema<UserDoc, UserModel, UserVirtuals>({ // <-- and here
+const schema = new Schema<UserDoc, UserModelType, {}, {}, UserVirtuals>({ // <-- and here
   firstName: String,
   lastName: String
 });
@@ -83,6 +86,9 @@ schema.virtual('fullName').get(function() {
   return `${this.firstName} ${this.lastName}`;
 });
 ```
+
+If you explicitly define the `UserVirtuals` interface, you should define your virtuals using `schema.virtual()` as shown above.
+We recommend `schema.virtual()` over the `virtuals` option to the Schema constructor shown in the Automatically Inferred Types section above because the `virtuals` option won't allow you to access other virtuals on `this`.
 
 ## Override the Type of `this` in Your Virtual
 

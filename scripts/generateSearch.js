@@ -1,14 +1,7 @@
 'use strict';
 
-let config;
-try {
-  config = require('../.config.js');
-} finally {
-  if (!config || !config.uri) {
-    console.error('No Config or config.URI given, please create a .config.js file with those values in the root of the repository');
-    process.exit(-1);
-  }
-}
+const isMain = require.main === module;
+
 const cheerio = require('cheerio');
 const docsFilemap = require('../docs/source');
 const fs = require('fs');
@@ -27,132 +20,189 @@ markdown.setOptions({
 // 5.13.5 -> 5.x, 6.8.2 -> 6.x, etc.
 version = version.slice(0, version.indexOf('.')) + '.x';
 
+console.log('Generating search for version', version);
+
 const contentSchema = new mongoose.Schema({
   title: { type: String, required: true },
   body: { type: String, required: true },
   url: { type: String, required: true },
-  version: { type: String, required: true, default: version }
+  version: { type: String, required: true, default: version },
+  versionNumber: { type: Number, required: true, default: version.replace(/\.x$/, '') }
 });
 contentSchema.index({ title: 'text', body: 'text' });
 const Content = mongoose.model('Content', contentSchema, 'Content');
 
-const contents = [];
+function generateContents() {
+  const contents = [];
 
-for (const [filename, file] of Object.entries(docsFilemap.fileMap)) {
-  if (file.api) {
-    for (const prop of file.props) {
-      const content = new Content({
-        title: `API: ${prop.name}`,
-        body: prop.description,
-        url: `${filename}#${prop.anchorId}`
-      });
-      const err = content.validateSync();
-      if (err != null) {
-        console.error(content);
-        throw err;
+  for (const [filename, file] of Object.entries(docsFilemap.fileMap)) {
+    if (file.api) {
+      for (const prop of file.props) {
+        const content = new Content({
+          title: `API: ${prop.name}`,
+          body: prop.description,
+          url: `${filename}#${prop.anchorId}`
+        });
+        const err = content.validateSync();
+        if (err != null) {
+          console.error(content);
+          throw err;
+        }
+        contents.push(content);
       }
+    } else if (file.markdown) {
+      let text = fs.readFileSync(filename, 'utf8');
+      text = markdown.parse(text);
+
+      const content = new Content({
+        title: file.title,
+        body: text,
+        url: filename.replace('.md', '.html').replace(/^docs/, '')
+      });
+
+      content.validateSync();
+
+      const $ = cheerio.load(text);
       contents.push(content);
+
+      // Break up h3's into additional content entries
+      $('h3').each((index, el) => {
+        el = $(el);
+        const title = el.text();
+        const html = el.nextUntil('h3').html();
+
+        // *** FIXED: Skip empty HTML blocks ***
+        if (!html || html.trim() === '') return;
+
+        const id = el.prop('id');
+        const baseUrl = filename.replace('.md', '.html').replace(/^docs/, '');
+        const content = new Content({
+          title: `${file.title}: ${title}`,
+          body: html,
+          url: id ? `${baseUrl}#${id}` : baseUrl
+        });
+
+        content.validateSync();
+        contents.push(content);
+      });
+
+    } else if (file.guide) {
+      let text = fs.readFileSync(filename, 'utf8');
+      text = text.substring(text.indexOf('block content') + 'block content\n'.length);
+      text = pug.render(`div\n${text}`, { filters: { markdown }, filename });
+
+      const content = new Content({
+        title: file.title,
+        body: text,
+        url: filename.replace('.pug', '.html').replace(/^docs/, '')
+      });
+
+      content.validateSync();
+
+      const $ = cheerio.load(text);
+      contents.push(content);
+
+      // Break up h3's into additional content entries
+      $('h3').each((index, el) => {
+        el = $(el);
+        const title = el.text();
+        const html = el.nextUntil('h3').html();
+
+        // *** FIXED: Skip empty HTML blocks ***
+        if (!html || html.trim() === '') return;
+
+        const id = el.prop('id');
+        const baseUrl = filename.replace('.pug', '.html').replace(/^docs/, '');
+        const content = new Content({
+          title: `${file.title}: ${title}`,
+          body: html,
+          url: id ? `${baseUrl}#${id}` : baseUrl
+        });
+
+        content.validateSync();
+        contents.push(content);
+      });
     }
-  } else if (file.markdown) {
-    let text = fs.readFileSync(filename, 'utf8');
-    text = markdown.parse(text);
-
-    const content = new Content({
-      title: file.title,
-      body: text,
-      url: filename.replace('.md', '.html').replace(/^docs/, '')
-    });
-
-    content.validateSync();
-
-    const $ = cheerio.load(text);
-
-    contents.push(content);
-
-    // Break up individual h3's into separate content for more fine grained search
-    $('h3').each((index, el) => {
-      el = $(el);
-      const title = el.text();
-      const html = el.nextUntil('h3').html();
-      const content = new Content({
-        title: `${file.title}: ${title}`,
-        body: html,
-        url: `${filename.replace('.md', '.html').replace(/^docs/, '')}#${el.prop('id')}`
-      });
-
-      content.validateSync();
-      contents.push(content);
-    });
-  } else if (file.guide) {
-    let text = fs.readFileSync(filename, 'utf8');
-    text = text.substr(text.indexOf('block content') + 'block content\n'.length);
-    text = pug.render(`div\n${text}`, { filters: { markdown }, filename });
-
-    const content = new Content({
-      title: file.title,
-      body: text,
-      url: filename.replace('.pug', '.html').replace(/^docs/, '')
-    });
-
-    content.validateSync();
-
-    const $ = cheerio.load(text);
-
-    contents.push(content);
-
-    // Break up individual h3's into separate content for more fine grained search
-    $('h3').each((index, el) => {
-      el = $(el);
-      const title = el.text();
-      const html = el.nextUntil('h3').html();
-      const content = new Content({
-        title: `${file.title}: ${title}`,
-        body: html,
-        url: `${filename.replace('.pug', '.html').replace(/^docs/, '')}#${el.prop('id')}`
-      });
-
-      content.validateSync();
-      contents.push(content);
-    });
   }
+
+  return contents;
 }
 
-run().catch(async error => {
-  console.error(error.stack);
-
-  // ensure the script exists in case of error
-  await mongoose.disconnect();
-});
-
-async function run() {
-  await mongoose.connect(config.uri, { dbName: 'mongoose', serverSelectionTimeoutMS: 5000 });
+async function generateSearch(config) {
+  console.log('Connect to', config.uri);
+  await mongoose.connect(config.uri);
 
   // wait for the index to be created
+  console.log('Init Content model...');
   await Content.init();
 
+  console.log('Deleting existing content...');
   await Content.deleteMany({ version });
+  console.log('Deleted content for version', version);
+
+  const contents = generateContents();
+
+  const promises = [];
+  let lastPrint = 0;
+  let doneCount = 0;
+
+  console.log('Search Content to save:', contents.length);
+
   for (const content of contents) {
-    if (version === '7.x') {
-      let url = content.url.startsWith('/') ? content.url : `/${content.url}`;
-      if (!url.startsWith('/docs')) {
-        url = '/docs' + url;
-      }
-      content.url = url;
-    } else {
-      const url = content.url.startsWith('/') ? content.url : `/${content.url}`;
-      content.url = `/docs/${version}/docs${url}`;
+    let url = content.url.startsWith('/') ? content.url : `/${content.url}`;
+    if (!url.startsWith('/docs')) {
+      url = '/docs' + url;
     }
-    await content.save();
+    content.url = version === '9.x' ? url : `/docs/${version}${url}`;
+
+    const promise = content.save().then(() => {
+      doneCount += 1;
+      const nowDate = Date.now();
+      if (nowDate - lastPrint > 2000 || doneCount === contents.length || doneCount === 1) {
+        lastPrint = nowDate;
+        console.log(`${doneCount} / ${contents.length}`);
+      }
+    });
+
+    promises.push(promise);
   }
 
-  const results = await Content.
-    find({ $text: { $search: 'validate' }, version }, { score: { $meta: 'textScore' } }).
-    sort({ score: { $meta: 'textScore' } }).
-    limit(10);
+  await Promise.allSettled(promises);
+
+  const results = await Content
+    .find({ $text: { $search: 'validate' }, version }, { score: { $meta: 'textScore' } })
+    .sort({ score: { $meta: 'textScore' } })
+    .limit(10);
 
   console.log(results.map(res => res.url));
 
-  console.log(`Added ${contents.length} Content`);
+  console.log(`Added ${contents.length} Search Content`);
+  await mongoose.disconnect();
+}
 
-  process.exit(0);
+function getConfig() {
+  const config = require('../.config.js');
+
+  if (!config || !config.uri) {
+    throw new Error('No Config or config.uri given, please create a .config.js file with those values in the root of the repository');
+  }
+
+  return config;
+}
+
+module.exports.generateSearch = generateSearch;
+module.exports.getConfig = getConfig;
+
+if (isMain) {
+  (async function main() {
+    const config = getConfig();
+    try {
+      await generateSearch(config);
+    } catch (error) {
+      console.error(error);
+      process.exit(-1);
+    } finally {
+      await mongoose.disconnect();
+    }
+  })();
 }

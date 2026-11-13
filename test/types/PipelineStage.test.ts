@@ -1,6 +1,5 @@
 import { ObjectId } from 'mongodb';
-import type { PipelineStage } from 'mongoose';
-import { expectError, expectType } from 'tsd';
+import type { PipelineStage, QueryFilter } from 'mongoose';
 
 /**
  * $addFields:
@@ -217,6 +216,8 @@ const project14: PipelineStage = {
   }
 };
 const project15: PipelineStage = { $project: { item: 1, result: { $not: [{ $gt: ['$qty', 250] }] } } };
+const project16: PipelineStage = { $project: { maxScores: { $maxN: { input: '$scores', n: 3 } } } };
+const project17: PipelineStage = { $project: { first3Scores: { $firstN: { input: '$scores', n: 3 } } } };
 
 const sort1: PipelineStage = { $sort: { count: -1 } };
 const sortByCount1: PipelineStage = { $sortByCount: '$tags' };
@@ -306,6 +307,21 @@ const setWindowFields4: PipelineStage = {
     output: {
       expMovingAvgForStock: {
         $expMovingAvg: { input: '$price', alpha: 0.75 }
+      }
+    }
+  }
+};
+
+const setWindowFields5: PipelineStage = {
+  $setWindowFields: {
+    partitionBy: '$gameId',
+    sortBy: { score: 1 },
+    output: {
+      minScores: {
+        $firstN: { input: '$score', n: 3 }
+      },
+      maxScores: {
+        $lastN: { input: '$score', n: 3 }
       }
     }
   }
@@ -419,6 +435,27 @@ const group5: PipelineStage = {
   }
 };
 const group6: PipelineStage = { $group: { _id: '$author', books: { $push: '$title' } } };
+const group7: PipelineStage = {
+  $group: {
+    _id: '$gameId',
+    topPlayers: {
+      $topN: {
+        output: ['$playerId', '$score'],
+        sortBy: { score: -1 },
+        n: 3
+      }
+    },
+    bottomPlayers: {
+      $bottomN: {
+        output: ['$playerId', '$score'],
+        sortBy: { score: 1 },
+        n: 3
+      }
+    },
+    maxScores: { $maxN: { input: '$score', n: 3 } },
+    minScores: { $minN: { input: '$score', n: 3 } }
+  }
+};
 
 const stages1: PipelineStage[] = [
   // First Stage
@@ -519,4 +556,39 @@ function gh12269() {
       }]
     }
   };
+}
+const vectorSearchStages: PipelineStage[] = [
+  {
+    $vectorSearch: {
+      index: 'title_vector_index',
+      path: 'embedding',
+      queryVector: [0.522, 0.123, 0.487],
+      limit: 5,
+      numCandidates: 100
+    }
+  },
+  {
+    $project: {
+      title: 1,
+      score: { $meta: 'searchScore' }
+    }
+  }
+];
+
+function gh16006() {
+  interface MyDoc {
+    _id: string;
+    name: string;
+  }
+
+  const matchCriteria: QueryFilter<MyDoc> = {
+    _id: 'foobar',
+    name: 'test'
+  };
+
+  const pipeline: PipelineStage[] = [
+    {
+      $match: matchCriteria
+    }
+  ];
 }

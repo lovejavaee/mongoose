@@ -19,8 +19,10 @@ exports.clearTestData = async function clearTestData(db) {
     retries -= 1;
     try {
       await _inner();
+      return;
     } catch (err) {
-      if (err instanceof mongoose.mongo.MongoWriteConcernError && /operation was interrupted/.test(err.message)) {
+      const retryable = err instanceof mongoose.mongo.MongoWriteConcernError && /operation was interrupted/.test(err.message);
+      if (retryable && retries > 0) {
         console.log('DropDB operation interrupted, retrying'); // log that a error was thrown to know that it is going to re-try
         continue;
       }
@@ -37,5 +39,8 @@ exports.stopRemainingOps = function stopRemainingOps(db) {
   for (const name of Object.keys(db.models)) {
     const model = db.models[name];
     model.collection.buffer = true;
+    if (db.collections[model.collection.name] === model.collection) {
+      delete db.collections[model.collection.name];
+    }
   }
 };

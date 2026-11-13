@@ -384,7 +384,7 @@ describe('model', function() {
       });
     });
 
-    describe.skip('model.ensureIndexes()', function() {
+    describe('model.ensureIndexes()', function() {
       it('is a function', function() {
         const schema = mongoose.Schema({ x: 'string' });
         const Test = mongoose.createConnection().model('ensureIndexes-' + random, schema);
@@ -412,6 +412,26 @@ describe('model', function() {
         await Test.ensureIndexes();
 
         assert.ok(called);
+      });
+
+      it('emits index-single-start and index-single-done with index fields and options', async function() {
+        const schema = new Schema({ name: String, email: String }, { autoIndex: false });
+        schema.index({ name: 1 });
+        schema.index({ email: 1 }, { unique: true, sparse: true });
+        const Test = db.model('Test', schema);
+
+        const events = [];
+        Test.on('index-single-start', (fields, options) => events.push(['start', fields, options]));
+        Test.on('index-single-done', (err, fields, options, name) => events.push(['done', err, fields, options, name]));
+
+        await Test.createIndexes();
+
+        assert.deepStrictEqual(events, [
+          ['start', { name: 1 }, {}],
+          ['done', null, { name: 1 }, {}, 'name_1'],
+          ['start', { email: 1 }, { unique: true, sparse: true }],
+          ['done', null, { email: 1 }, { unique: true, sparse: true }, 'email_1']
+        ]);
       });
     });
   });
@@ -546,7 +566,7 @@ describe('model', function() {
       let indexes = await User.listIndexes();
       assert.equal(indexes.length, 2);
       assert.deepEqual(indexes[1].key, { username: 1 });
-      assert.ok(!indexes[1].collation);
+      assert.ok(indexes[1].collation == null || indexes[1].collation.locale === 'simple');
 
       userSchema = new mongoose.Schema({ username: String }, { autoIndex: false });
       userSchema.index({ username: 1 }, {
@@ -698,7 +718,18 @@ describe('model', function() {
 
       await User.init();
       const indexes = await User.listIndexes();
-      assert.ok(!indexes[1].collation);
+      // `indexes[1].collation` will be `undefined` in MongoDB server 8.x
+      // but will be `{ locale: 'simple' }` in MongoDB server 9.x.
+      // This test does not switch on the MongoDB server version because
+      // `{ locale: 'simple' }` is the default collation behavior in all
+      // supported versions of MongoDB server, so even if the server starts
+      // reporting `{ locale: 'simple' }` in MongoDB server 8, that
+      // is still correct for the purposes of this test.
+      if (indexes[1].collation) {
+        assert.deepEqual(indexes[1].collation, { locale: 'simple' });
+      } else {
+        assert.equal(indexes[1].collation, undefined);
+      }
       await User.collection.drop();
     });
 
@@ -713,6 +744,16 @@ describe('model', function() {
       const result = await User.diffIndexes();
       assert.deepStrictEqual(result.toDrop, ['age_1', 'weight_1']);
       assert.deepStrictEqual(result.toCreate, [{ password: 1 }, { email: 1 }]);
+    });
+
+    it('running diffIndexes with a non-existent collection should not throw an error (gh-14010)', async function() {
+      const testSchema = new mongoose.Schema({
+        name: String
+      });
+
+      const Test = db.model('gh14010', testSchema);
+      const res = await Test.diffIndexes();
+      assert.ok(res);
     });
   });
 });

@@ -13,7 +13,7 @@ describe('driver', function() {
 
     class Collection {
       findOne(filter, options) { // eslint-disable-line no-unused-vars
-        return Promise.resolve({ answer: 42 });
+        return Promise.resolve({ answer: 42, date: '2023-10-01' });
       }
     }
     class Connection extends EventEmitter {
@@ -34,17 +34,37 @@ describe('driver', function() {
     }
     const driver = {
       Collection,
-      Connection
+      Connection,
+      plugins: [foo],
+      SchemaTypes: {
+        DateString: class DateString extends mongoose.SchemaType {
+          constructor(key, options) {
+            super(key, options, 'DateString');
+          }
+
+          cast(val) {
+            if (typeof val !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(val)) {
+              throw new Error('DateString must be in format yyyy-mm-dd');
+            }
+            return val;
+          }
+        }
+      }
     };
 
     m.setDriver(driver);
+    assert.deepStrictEqual(m.plugins.slice(mongoose.plugins.length), [[foo, undefined]]);
 
     await m.connect();
 
-    const Test = m.model('Test', m.Schema({ answer: Number }));
+    const Test = m.model('Test', m.Schema({ answer: Number, date: 'DateString' }));
 
     const res = await Test.findOne();
-    assert.deepEqual(res.toObject(), { answer: 42 });
+    assert.deepEqual(res.toObject(), { answer: 42, date: '2023-10-01' });
+
+    await assert.rejects(Test.create({ answer: 12, date: '2025-01' }), /path "date"/);
+
+    function foo() {}
   });
 
   it('multiple drivers (gh-12638)', async function() {
@@ -96,7 +116,6 @@ describe('driver', function() {
     const Test = m1.model('Test', new Schema({ answer: Number }, { versionKey: false }));
     await Test.create({ answer: 42 });
     let doc = await Test.findOne();
-    /* eslint-disable no-unused-vars */
     assert.deepEqual((({ _id, ...doc }) => doc)(doc.toObject()), { answer: 42 });
 
     await m2.connect('fake.com');

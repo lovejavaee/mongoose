@@ -49,7 +49,7 @@ interface TestStaticMethods {
   findSomething(this: TestModel): Promise<TestDocument>;
 }
 type TestDocument = HydratedDocument<Test, TestVirtuals & TestInstanceMethods>;
-type TestQuery = Query<any, TestDocument, TestQueryHelpers> & TestQueryHelpers;
+type TestQuery = Query<any, TestDocument, TestQueryHelpers, Test> & TestQueryHelpers;
 interface TestQueryHelpers {
   whereSomething(this: TestQuery): this
 }
@@ -88,4 +88,28 @@ async function registerPlugin(): Promise<void> {
   console.log(test3.firstName);
   console.log(test3.fullName);
   console.log(test3.doSomething());
+}
+
+function gh16086() {
+  interface Doc {
+    name: string;
+  }
+
+  type DocInstance = HydratedDocument<Doc>;
+
+  interface ModelWithStatic extends Model<Doc, {}, {}, {}, DocInstance> {
+    findByName(name: string): Promise<Doc>;
+  }
+
+  function plugin(schema: Schema): void {
+    schema.pre('save', function() {
+      void this;
+    });
+  }
+
+  const schema = new Schema<Doc, ModelWithStatic>({
+    name: { type: String, required: true }
+  });
+
+  schema.plugin(plugin);
 }

@@ -15,11 +15,11 @@ jobs:
     if: github.repository == 'Automattic/mongoose'
     steps:
       - name: Checkout
-        uses: actions/checkout@8f4b7f84864484a7bf31766abe9204da3cbe65b3 # v3.5.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup node
-        uses: actions/setup-node@64ed1c7eab4cce3362f8c340dee64e5eaeef8f7c # v3.6.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 16
+          node-version: 22
       - name: Alignment
         uses: tidelift/alignment-action@8d7700fe795fc01179c1f9fa05b72a089873027d # main
         env:

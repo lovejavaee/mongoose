@@ -48,7 +48,11 @@ package-lock.json
 docs/*.html
 docs/tutorials/*.html
 docs/typescript/*.html
+docs/production/*.html
 docs/api/*.html
+docs/api/*.md
+docs/vendor/
+/llms.txt
 # the below excludes things like "0test.x" too, but gitignore does not have something like js regex "[0-9]+", so this is the best for future versions
 docs/[0-9]*.x/
 index.html
@@ -59,6 +63,9 @@ index.html
 # yarn package-lock
 yarn.lock
 
+# deno lock
+deno.lock
+
 # npm pack output
 mongoose.tgz
 mongoose-*.tgz
@@ -67,3 +74,12 @@ examples/ecommerce-netlify-functions/.netlify/state.json
 
 notes.md
 list.out
+
+data
+fle-cluster-config.json
+
+# @ark/attest (type testing)
+.attest
+.worktrees/
+
+tools/**

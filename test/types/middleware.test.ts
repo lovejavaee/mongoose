@@ -1,12 +1,11 @@
-import { Schema, model, Model, Document, SaveOptions, Query, Aggregate, HydratedDocument, PreSaveMiddlewareFunction } from 'mongoose';
-import { expectError, expectType, expectNotType } from 'tsd';
+import { Schema, model, Model, Document, SaveOptions, Query, Aggregate, HydratedDocument, PreSaveMiddlewareFunction, ModifyResult, AnyBulkWriteOperation } from 'mongoose';
+import { CreateCollectionOptions } from 'mongodb';
+import { expect } from 'tstyche';
 
-const preMiddlewareFn: PreSaveMiddlewareFunction<Document> = function(next, opts) {
+const preMiddlewareFn: PreSaveMiddlewareFunction<Document> = function(opts) {
   this.$markValid('name');
-  if (opts.session) {
-    next();
-  } else {
-    next(new Error('Operation must be in Session.'));
+  if (!opts.session) {
+    throw new Error('Operation must be in Session.');
   }
 };
 
@@ -19,7 +18,7 @@ schema.pre<Query<any, any>>('find', async function() {
 });
 
 schema.pre<Query<any, any>>('find', async function() {
-  expectError(this.notAFunction());
+  expect(this).type.not.toHaveProperty('notAFunction');
 });
 
 schema.pre<Aggregate<any>>('aggregate', async function() {
@@ -31,12 +30,12 @@ schema.post<Aggregate<any>>('aggregate', async function(res: Array<any>) {
 });
 
 schema.post<Aggregate<ITest>>('aggregate', function(res, next) {
-  expectType<ITest[]>(res);
+  expect(res).type.toBe<ITest[]>();
   next();
 });
 
 schema.post<Query<ITest, ITest>>('save', function(res, next) {
-  expectType<Query<ITest, ITest>>(res);
+  expect(res).type.toBe<Query<ITest, ITest>>();
   next();
 });
 
@@ -44,17 +43,16 @@ schema.pre(['save', 'validate'], { query: false, document: true }, async functio
   await Test.findOne({});
 });
 
-schema.pre('save', function(next, opts: SaveOptions) {
+schema.pre('save', function(opts: SaveOptions) {
   console.log(opts.session);
-  next();
 });
 
-schema.pre('save', function(next) {
+schema.pre('save', function() {
   console.log(this.name);
 });
 
 schema.post<ITest>('save', function(res, next) {
-  expectType<ITest>(res);
+  expect(res).type.toBe<ITest>();
   next();
 });
 
@@ -62,54 +60,61 @@ schema.post<ITest>('save', function() {
   console.log(this.name);
 });
 
+schema.post<ITest>('save', async function() {
+  console.log(this.name);
+});
+
 schema.post<ITest>('save', function(err: Error, res: ITest, next: Function) {
   console.log(this.name, err.stack);
 });
 
-schema.pre<Model<ITest>>('insertMany', function() {
-  const name: string = this.name;
+schema.pre('insertMany', function() {
+  const name: string = this.modelName;
   return Promise.resolve();
 });
 
-schema.pre<Model<ITest>>('insertMany', { document: false, query: false }, function() {
-  console.log(this.name);
+schema.pre('insertMany', function() {
+  console.log(this.modelName);
 });
 
-schema.pre<Model<ITest>>('insertMany', function(next) {
-  console.log(this.name);
-  next();
+schema.pre('insertMany', function(docs: ITest[]) {
+  console.log(this.modelName, docs);
 });
 
-schema.pre<Model<ITest>>('insertMany', function(next, doc: ITest) {
-  console.log(this.name, doc);
-  next();
+schema.pre('insertMany', function(docs: Array<ITest>) {
+  console.log(this.modelName, docs);
 });
 
-schema.pre<Model<ITest>>('insertMany', function(next, docs: Array<ITest>) {
-  console.log(this.name, docs);
-  next();
+schema.pre('bulkWrite', function(ops: Array<AnyBulkWriteOperation<any>>) {
 });
 
-schema.pre<Query<number, any>>('count', function(next) {});
-schema.post<Query<number, any>>('count', function(count, next) {
-  expectType<number>(count);
-  next();
+schema.pre('createCollection', function(opts?: CreateCollectionOptions) {
 });
 
-schema.pre<Query<number, any>>('estimatedDocumentCount', function(next) {});
+schema.pre<Query<number, any>>('estimatedDocumentCount', function() {});
 schema.post<Query<number, any>>('estimatedDocumentCount', function(count, next) {
-  expectType<number>(count);
+  expect(count).type.toBe<number>();
   next();
 });
 
-schema.pre<Query<number, any>>('countDocuments', function(next) {});
+schema.pre<Query<number, any>>('countDocuments', function() {});
 schema.post<Query<number, any>>('countDocuments', function(count, next) {
-  expectType<number>(count);
+  expect(count).type.toBe<number>();
   next();
 });
 
 schema.post<Query<ITest, ITest>>('findOneAndDelete', function(res, next) {
-  expectType<ITest>(res);
+  expect(res).type.toBe<ITest | ModifyResult<ITest> | null>();
+  next();
+});
+
+schema.post<Query<ITest, ITest>>('findOneAndUpdate', function(res, next) {
+  expect(res).type.toBe<ITest | ModifyResult<ITest> | null>();
+  next();
+});
+
+schema.post<Query<ITest, ITest>>('findOneAndReplace', function(res, next) {
+  expect(res).type.toBe<ITest | ModifyResult<ITest> | null>();
   next();
 });
 
@@ -122,9 +127,8 @@ function gh11480(): void {
 
   const UserSchema = new Schema<IUserSchema>({ name: { type: String } });
 
-  UserSchema.pre('save', function(next) {
-    expectNotType<any>(this);
-    next();
+  UserSchema.pre('save', function() {
+    expect(this).type.toBe<HydratedDocument<IUserSchema>>();
   });
 }
 
@@ -142,7 +146,7 @@ function gh12583() {
   });
 
   userSchema.post('save', { errorHandler: true }, function(error, doc, next) {
-    expectType<Error>(error);
+    expect(error).type.toBe<Error>();
     console.log(error.name);
     console.log(doc.name);
   });
@@ -162,7 +166,7 @@ function gh11257() {
   });
 
   schema.pre('save', { document: true }, function() {
-    expectType<HydratedDocument<User>>(this);
+    expect(this).type.toBe<HydratedDocument<User>>();
   });
 
   schema.pre('updateOne', { document: true, query: false }, function() {
@@ -172,4 +176,71 @@ function gh11257() {
   schema.pre('updateOne', { document: false, query: true }, function() {
     this.find();
   });
+}
+
+function gh13601() {
+  const testSchema = new Schema({
+    name: String
+  });
+
+  testSchema.pre('deleteOne', { document: true }, function() {
+    expect(this).type.toBeAssignableTo<Document>();
+  });
+}
+
+function gh15242() {
+  type PostPersisted = {
+    title: string,
+    postTime: Date
+  };
+
+  type ValidatorThis = DocumentValidatorThis | QueryValidatorThis;
+  type DocumentValidatorThis = HydratedDocument<PostPersisted>;
+  type QueryValidatorThis = Query<unknown, PostRecord>;
+
+  const PostSchema = new Schema<PostPersisted>({
+    title: { type: String, required: true },
+    postTime: {
+      type: Date,
+      required: true,
+      validate: {
+        validator: async function(this: ValidatorThis, postTime: Date): Promise<boolean> {
+          return true;
+        }
+      }
+    }
+  });
+
+  type PostRecord = HydratedDocument<PostPersisted>;
+  const PostModel = model<PostPersisted>('Post', PostSchema);
+}
+
+function gh15242WithVirtuals() {
+  type PostPersisted = {
+    title: string,
+    postTime: Date
+  };
+
+  type ValidatorThis = DocumentValidatorThis | QueryValidatorThis;
+  type DocumentValidatorThis = HydratedDocument<PostPersisted, { myVirtual: number }>;
+  type QueryValidatorThis = Query<PostRecord, PostRecord>;
+
+  const PostSchema = new Schema({
+    title: { type: String, required: true },
+    postTime: {
+      type: Date,
+      required: true,
+      validate: {
+        validator: async function(this: ValidatorThis, postTime: Date): Promise<boolean> {
+          if (!(this instanceof Query)) {
+            expect(this.myVirtual).type.toBe<number>();
+          }
+          return true;
+        }
+      }
+    }
+  }, { virtuals: { myVirtual: { get() { return 42; } } } });
+
+  type PostRecord = HydratedDocument<PostPersisted, { myVirtual: number }>;
+  const PostModel = model<PostPersisted>('Post', PostSchema);
 }

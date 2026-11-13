@@ -183,4 +183,33 @@ describe('schema alias option', function() {
     assert.ok(schema.virtuals['name1']);
     assert.ok(schema.virtuals['name2']);
   });
+  it('supports passing the alias name for an index (gh-13276)', function() {
+    const testSchema = new Schema({
+      fullName: {
+        type: String,
+        alias: 'short'
+      }
+    });
+    testSchema.index({ short: 1 });
+    const indexes = testSchema.indexes();
+    assert.equal(indexes[0][0].fullName, 1);
+  });
+
+  it('should disable the id virtual entirely if there\'s a field with alias `id` gh-13650', async function() {
+
+    const testSchema = new Schema({
+      _id: {
+        type: String,
+        required: true,
+        set: (val) => val.replace(/\s+/g, ' '),
+        alias: 'id'
+      }
+    });
+    const Test = db.model('gh13650', testSchema);
+    const doc = new Test({
+      id: 'H-1'
+    });
+    await doc.save();
+    assert.ok(doc);
+  });
 });

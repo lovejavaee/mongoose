@@ -97,4 +97,47 @@ describe('types.subdocument', function() {
       assert.ok(doc.child.isModified('id'));
     });
   });
+
+  it('respects schematype-level minimize (gh-15313)', function() {
+    const MySubSchema = new Schema({}, { strict: false, _id: false });
+    const MySchema = new Schema({ myfield: { type: MySubSchema, minimize: false } });
+    const MyModel = db.model('MyModel', MySchema);
+
+    const doc = new MyModel({ myfield: {} });
+    assert.deepStrictEqual(doc.toObject().myfield, {});
+
+    const doc2 = new MyModel({ myfield: { empty: {} } });
+    assert.deepStrictEqual(doc2.toObject().myfield, { empty: {} });
+  });
+
+  it('does not minimize empty document array elements to undefined (gh-7322)', function() {
+    const ItemSchema = new Schema(
+      { taxRate: Number, taxAmount: Number },
+      { _id: false }
+    );
+    const MySchema = new Schema({ items: { type: [ItemSchema], default: undefined } });
+    const MyModel = db.model('Test2', MySchema);
+
+    const doc = new MyModel({
+      items: [{ taxRate: 19 }, { taxRate: undefined, taxAmount: undefined }]
+    });
+
+    assert.deepStrictEqual(doc.toObject({ minimize: true }).items, [{ taxRate: 19 }, {}]);
+  });
+
+  it('saves an empty document array element as an empty object, not null (gh-7322)', async function() {
+    const ItemSchema = new Schema(
+      { taxRate: Number, taxAmount: Number },
+      { _id: false }
+    );
+    const MySchema = new Schema({ items: { type: [ItemSchema], default: undefined } });
+    const MyModel = db.model('Test3', MySchema);
+
+    const doc = await MyModel.create({
+      items: [{ taxRate: 19 }, { taxRate: undefined, taxAmount: undefined }]
+    });
+
+    const raw = await MyModel.collection.findOne({ _id: doc._id });
+    assert.deepStrictEqual(raw.items, [{ taxRate: 19 }, {}]);
+  });
 });

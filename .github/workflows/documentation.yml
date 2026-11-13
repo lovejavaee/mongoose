@@ -7,8 +7,10 @@ on:
       - 'docs/**'
       - 'lib'
       - 'test'
-      - 'website.js'
+      - 'scripts/website.js'
       - 'CHANGELOG.md'
+      - 'CONTRIBUTING.md'
+      - 'index.pug'
   push:
     branches:
       - master
@@ -18,24 +20,59 @@ on:
       - 'docs/**'
       - 'lib'
       - 'test'
-      - 'website.js'
+      - 'scripts/website.js'
       - 'CHANGELOG.md'
+      - 'CONTRIBUTING.md'
+      - 'index.pug'
 permissions:
   contents: read
 
 jobs:
+  lint-documentation:
+    runs-on: ubuntu-latest
+    name: Lint Markdown files
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - run: npm install
+
+      - name: Lint MD-Files # run markdownlint
+        run: npm run lint-md
+
+      # enable when "eslint-markdown" can be used without errors
+      # - name: Lint JS-Files # run eslint to lint the code-blocks themself
+      #   run: npm run lint-js
+
   test-documentation:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     name: Test Generating Docs
     steps:
-      - uses: actions/checkout@8f4b7f84864484a7bf31766abe9204da3cbe65b3 # v3.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: git fetch --depth=1 --tags # download all tags for documentation
 
       - name: Setup node
-        uses: actions/setup-node@64ed1c7eab4cce3362f8c340dee64e5eaeef8f7c # v3.6.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 16
+          node-version: 22
 
       - run: npm install
+      - name: Setup MongoDB
+        run: |
+          wget -q https://downloads.mongodb.org/linux/mongodb-linux-x86_64-ubuntu2204-6.0.20.tgz
+          tar xf mongodb-linux-x86_64-ubuntu2204-6.0.20.tgz
+          mkdir -p ./data/db/27017 ./data/db/27000
+          printf "\n--timeout 8000" >> ./test/mocha.opts
+          ./mongodb-linux-x86_64-ubuntu2204-6.0.20/bin/mongod --setParameter ttlMonitorSleepSecs=1 --fork --dbpath ./data/db/27017 --syslog --port 27017
+          sleep 2
+          ./mongodb-linux-x86_64-ubuntu2204-6.0.20/bin/mongod --version
+          echo `pwd`/mongodb-linux-x86_64-ubuntu2204-6.0.20/bin >> $GITHUB_PATH
+      - name: Setup config
+        run: |
+          echo "module.exports = {uri:'mongodb://127.0.0.1:27017/mongoose_test'};" > ./.config.js
       - run: npm run docs:clean
       - run: npm run docs:generate
